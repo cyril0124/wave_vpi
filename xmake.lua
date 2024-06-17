@@ -1,13 +1,75 @@
 add_rules("mode.debug", "mode.release")
 
-target("wave_vpi")
+target("tests")
     set_kind("binary")
-    add_files("./src/*.cc")
-    add_includedirs("./src/")
+    add_files(
+        "./src/wave_vpi.cc", 
+        "./tests/unit_test.cc"
+    )
+
+    add_includedirs(
+        "./src", 
+        "./tests", 
+        "./vcpkg/installed/x64-linux", 
+        "./vcpkg/installed/x64-linux/include"
+    )
+
+    add_cxflags("-DNO_VLOG_STARTUP")
 
     add_links("wave_vpi")
     add_linkdirs("./target/release")
+    
+    add_links("fmt")
+    add_links("assert", "cpptrace", "dwarf", "zstd", "z")
+    add_links("Catch2")
+    add_linkdirs("./vcpkg/installed/x64-linux/lib")
+
     add_runenvs("LD_LIBRARY_PATH", os.getenv("PWD") .. "/target/release")
+    add_runenvs("LD_LIBRARY_PATH", os.getenv("PWD") .. "/vcpkg/installed/x64-linux/lib")
+    add_runenvs("PRJ_DIR", os.getenv("PWD"))
+
+target("example")
+    set_kind("binary")
+    add_files(
+        "./src/wave_vpi.cc", 
+        "./src/wave_dpi.cc", 
+        "./example/example.cc"
+    )
+
+    add_includedirs(
+        "./src", 
+        "./vcpkg/installed/x64-linux", 
+        "./vcpkg/installed/x64-linux/include"
+    )
+
+    if is_mode("debug") then
+        add_defines("DEBUG")
+        set_symbols("debug")
+        set_optimize("none")
+    end
+
+    add_cxflags("-DBOOST_STACKTRACE_USE_BACKTRACE")
+
+    add_links("fmt")
+    add_links("assert", "cpptrace", "dwarf", "zstd", "z")
+    add_links("backtrace", "boost_stacktrace_basic")
+    add_linkdirs("./vcpkg/installed/x64-linux/lib")
+    
+    add_links("lua_vpi")
+    add_links("luajit-5.1")
+    add_linkdirs(os.getenv("VERILUA_HOME") .. "/shared")
+    add_linkdirs(os.getenv("VERILUA_HOME") .. "/luajit2.1/lib")
+    
+    add_links("wave_vpi")
+    add_linkdirs("./target/release")
+
+    add_runenvs("LD_LIBRARY_PATH", os.getenv("PWD") .. "/vcpkg/installed/x64-linux/lib")
+    add_runenvs("LD_LIBRARY_PATH", os.getenv("VERILUA_HOME") .. "/shared")
+    add_runenvs("LD_LIBRARY_PATH", os.getenv("PWD") .. "/target/release")
+
+    add_runenvs("PRJ_DIR", os.getenv("PWD"))
+    add_runenvs("DUT_TOP", "tb_top")
+    add_runenvs("VERILUA_CFG", os.getenv("PWD") .. "/example/verilua_cfg_unknown")
 
 --
 -- If you want to known more usage about xmake, please see https://xmake.io

@@ -4,7 +4,7 @@
 use byteorder::{BigEndian, ByteOrder};
 use bytesize::ByteSize;
 use indicatif::ProgressStyle;
-use std::borrow::Borrow;
+use std::borrow::{Borrow, BorrowMut};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
@@ -96,7 +96,8 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
     .unwrap();
 
     let id = unsafe {
-        HIERARCHY.as_ref().unwrap().get_unique_signals_vars().iter().flatten().find_map(|var| {
+        // HIERARCHY.as_ref().unwrap().get_unique_signals_vars().iter().flatten().find_map(|var| {
+        HIERARCHY.as_ref().unwrap().iter_vars().find_map(|var| {
             let signal_name = var.full_name(&HIERARCHY.as_ref().unwrap());
             if signal_name == name.to_string() {
                 let ids = [var.signal_ref(); 1];
@@ -121,10 +122,9 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
         })
     };
     assert!(id.is_some(), "[wellen_vpi_handle_by_name] cannot find vpiHandle => name:{}", name);
-    // println!("[wellen_vpi_handle_by_name] find vpiHandle => name:{} id:{}", name, id.unwrap());
-    println!("[wellen_vpi_handle_by_name] find vpiHandle => name:{} id:{:?}", name, id);
+    // println!("[wellen_vpi_handle_by_name] find vpiHandle => name:{} id:{:?}", name, id);
 
-    println!("{:#?}", unsafe { SIGNAL_CACHE.as_ref().unwrap()});
+    // println!("{:#?}", unsafe { SIGNAL_CACHE.as_ref().unwrap()});
 
     let value = Box::new(id.unwrap() as vpiHandle);
     Box::into_raw(value) as *mut c_void
@@ -196,11 +196,9 @@ fn find_nearest_time_index(time_table: &[u64], time: u64) -> usize {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn wellen_vpi_get_value(handle: *mut c_void, time: u64, value_p: p_vpi_value) {
+pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, time_table_idx: u64, value_p: p_vpi_value) {
     let handle = unsafe { *{ handle as *mut vpiHandle } };
     let v_format = value_p.read().format;
-
-    let time_table_idx = find_nearest_time_index(TIME_TABLE.as_ref().unwrap(), time);
 
     let loaded_signal = SIGNAL_CACHE.as_ref().unwrap().get(&(handle as vpiHandle)).unwrap().signal.borrow();
     let off = loaded_signal.get_offset(time_table_idx as u32).unwrap();
@@ -211,13 +209,13 @@ pub unsafe extern "C" fn wellen_vpi_get_value(handle: *mut c_void, time: u64, va
     match signal_v {
         | SignalValue::Binary(data, _bits) => {
             let words = bytes_to_u32s_be(data);
-            // println!("data => {:?} ww => {:?}", data, words);
+            // println!("data => {:?} ww => {:?}   {}", data, words, words[words.len() - 1]);
 
             match v_format as u32 {
                 | vpiVectorVal => {
                     let mut vecvals = Vec::new();
                     for i in 0..words.len() {
-                        vecvals.push(t_vpi_vecval {
+                        vecvals.insert(0, t_vpi_vecval {
                             aval: words[i] as i32,
                             bval: 0,
                         });
@@ -228,7 +226,8 @@ pub unsafe extern "C" fn wellen_vpi_get_value(handle: *mut c_void, time: u64, va
                     (*value_p).value.vector = vecvals_ptr;
                 }
                 | vpiIntVal => {
-                    (*value_p).value.integer = words[0] as i32;
+                    let value = words[words.len() - 1] as i32;
+                    (*value_p).value.integer = value;
                 }
                 | _ => {
                     todo!("v_format => {}", v_format)
@@ -262,18 +261,25 @@ pub unsafe extern "C" fn wellen_vpi_get_value(handle: *mut c_void, time: u64, va
         | _ => panic!("{:#?}", signal_v),
     }
 
-    println!("[wellen_vpi_get_value] handle is {:?} format is {:?} value is {:?}", handle, v_format, signal_value);
+    // println!("[wellen_vpi_get_value] handle is {:?} format is {:?} value is {:?} signal_v is {:?}", handle, v_format, signal_value, signal_v);
 }
 
-trait GetBits {
-    fn get_bits(&self) -> u32;
+#[no_mangle]
+pub unsafe extern "C" fn wellen_vpi_get_value(handle: *mut c_void, time: u64, value_p: p_vpi_value) {
+    let time_table_idx = find_nearest_time_index(TIME_TABLE.as_ref().unwrap(), time);
+    wellen_vpi_get_value_from_index(handle, time_table_idx as u64, value_p);
 }
 
-impl GetBits for wellen::Signal {
-    fn get_bits(&self) -> u32 {
-        0
-    }
+#[no_mangle]
+pub unsafe extern "C" fn wellen_get_value_str(handle: *mut c_void, time_table_idx: u64) -> *mut c_char {
+    let handle = unsafe { *{ handle as *mut vpiHandle } };
+    let loaded_signal = SIGNAL_CACHE.as_ref().unwrap().get(&(handle as vpiHandle)).unwrap().signal.borrow();
+    let off = loaded_signal.get_offset(time_table_idx as u32).unwrap();
+    let signal_value = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
+    let c_string = CString::new(signal_value).expect("CString::new failed");
+    c_string.into_raw()
 }
+
 
 #[no_mangle]
 pub unsafe extern "C" fn wellen_vpi_get(property: PLI_INT32, handle: *mut c_void) -> PLI_INT32 {
@@ -357,115 +363,18 @@ pub unsafe extern "C" fn wellen_vpi_iterate(_type: PLI_INT32, refHandle: *mut c_
 }
 
 #[no_mangle]
-pub extern "C" fn wellen_test(filename: *const c_char) {
-    let c_str = unsafe {
-        assert!(!filename.is_null());
-        CStr::from_ptr(filename)
-    };
-
-    let r_str = c_str.to_str().unwrap();
-    let filename = r_str;
-
-    let header_start = std::time::Instant::now();
-    let header = viewers::read_header(&filename, &LOAD_OPTS).expect("Failed to load file!");
-    let header_load_duration = header_start.elapsed();
-    println!("It took {:?} to load the header of {}", header_load_duration, filename);
-
-    // create body progress indicator
-    let body_len = header.body_len;
-    let (body_progress, progress) = if body_len == 0 {
-        (None, None)
-    } else {
-        let p = Arc::new(AtomicU64::new(0));
-        let p_out = p.clone();
-        let done = Arc::new(AtomicBool::new(false));
-        let done_out = done.clone();
-        let ten_millis = std::time::Duration::from_millis(10);
-        let t = thread::spawn(move || {
-            let bar = indicatif::ProgressBar::new(body_len);
-            bar.set_style(ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {decimal_bytes} ({percent_precise}%)").unwrap());
-            loop {
-                // always update
-                let new_value = p.load(Ordering::SeqCst);
-                bar.set_position(new_value);
-                thread::sleep(ten_millis);
-                // see if we are done
-                let now_done = done.load(Ordering::SeqCst);
-                if now_done {
-                    if bar.position() != body_len {
-                        println!("WARN: Final progress value was: {}, expected {}", bar.position(), body_len);
-                    }
-                    bar.finish_and_clear();
-                    break;
-                }
-            }
-        });
-
-        (Some(p_out), Some((done_out, t)))
-    };
-
-    // load body
-    let hierarchy = header.hierarchy;
-    let body_start = std::time::Instant::now();
-    let body = viewers::read_body(header.body, &hierarchy, body_progress).expect("Failed to load body!");
-    let body_load_duration = body_start.elapsed();
-    println!("It took {:?} to load the body of {}", body_load_duration, filename);
-    if let Some((done, t)) = progress {
-        done.store(true, Ordering::SeqCst);
-        t.join().unwrap();
-    }
-    let mut wave_source = body.source;
-
-    let time_table = body.time_table;
-    // println!("Time table: {:#?}", time_table);
-    println!("Time table size: {}", time_table.len());
-
-    for var in hierarchy.get_unique_signals_vars().iter().flatten() {
-        let _signal_name = var.full_name(&hierarchy);
-        let ids = [var.signal_ref(); 1];
-        let loaded = wave_source.load_signals(&ids, &hierarchy, LOAD_OPTS.multi_thread);
-        let (loaded_id, loaded_signal) = loaded.into_iter().next().unwrap();
-        assert_eq!(loaded_id, ids[0]);
-
-        println!("{} {}", _signal_name, var.length().unwrap());
-
-        if _signal_name.contains("tb_top.u_others.clock") {
-            for i in 0..time_table.len() {
-                let off = loaded_signal.get_offset(i as u32).unwrap();
-                let wave_time = time_table[i];
-                let signal_value = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
-                println!("[{}] #{} {} {:#?}", i, wave_time, _signal_name, signal_value);
-                if i >= 100 {
-                    break;
-                }
-            }
-        }
-        // println!("{}", _signal_name);
-    }
+pub extern "C" fn wellen_get_time_from_index(index: u64) -> u64 {
+    let time_table = unsafe { TIME_TABLE.as_ref().unwrap() };
+    time_table[index as usize]
 }
 
 #[no_mangle]
-pub extern "C" fn wellen_test_1() {
-    unsafe {
-        for var in HIERARCHY.as_ref().unwrap().get_unique_signals_vars().iter().flatten() {
-            let _signal_name = var.full_name(&HIERARCHY.as_ref().unwrap());
-            let ids = [var.signal_ref(); 1];
-            let loaded = WAVE_SOURCE.as_mut().unwrap().load_signals(&ids, &HIERARCHY.as_ref().unwrap(), LOAD_OPTS.multi_thread);
-            let (loaded_id, loaded_signal) = loaded.into_iter().next().unwrap();
-            assert_eq!(loaded_id, ids[0]);
+pub extern "C" fn wellen_get_index_from_time(time: u64) -> u64 {
+    let time_table = unsafe { TIME_TABLE.as_ref().unwrap() };
+    find_nearest_time_index(time_table, time) as u64
+}
 
-            if _signal_name.contains("tb_top.u_others.clock") {
-                for i in 0..TIME_TABLE.as_ref().unwrap().len() {
-                    let off = loaded_signal.get_offset(i as u32).unwrap();
-                    let wave_time = TIME_TABLE.as_ref().unwrap()[i];
-                    let signal_value = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
-                    println!("[{}] #{} {} {:#?}", i, wave_time, _signal_name, signal_value);
-                    if i >= 100 {
-                        break;
-                    }
-                }
-            }
-            println!("{}", _signal_name);
-        }
-    }
+#[no_mangle]
+pub unsafe extern "C" fn wellen_get_max_index() -> u64 {
+    (TIME_TABLE.as_ref().unwrap().len() - 1) as u64
 }
