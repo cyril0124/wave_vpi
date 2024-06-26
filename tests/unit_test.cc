@@ -30,13 +30,13 @@ TEST_CASE("vpi_get_value", "[vpi_get_value]") {
     for(int i = 0; i < 10; i++) {
         cursor.updateTime(i * 8);
         vpi_get_value(reinterpret_cast<vpiHandle>(hdl), &v);
-        printf("[%d] #%d v => %d\n", i, cursor.time, v.value.integer);
+        fmt::println("[{}] #{} v => {}", i, cursor.time, v.value.integer);
     }
 
     for(int i = 0; i < 10; i++) {
         cursor.updateTime(i * 5);
         vpi_get_value(reinterpret_cast<vpiHandle>(hdl2), &v);
-        printf("[%d] #%d v => %d\n", i, cursor.time, v.value.integer);
+        fmt::println("[{}] #{} v => {}", i, cursor.time, v.value.integer);
     }
 }
 

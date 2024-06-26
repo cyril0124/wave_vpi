@@ -73,14 +73,19 @@ void wave_vpi_main() {
             if (cb.second.cbData->cb_rtn != nullptr) {
                 ASSERT(cb.second.cbData->obj != nullptr);
                 ASSERT(cb.second.cbData->cb_rtn != nullptr);
-                // fmt::println("hello 0");
                 auto newValueStr = _wellen_get_value_str(&cb.second.handle);
-                // fmt::println("hello 1 newValueStr => {}", newValueStr);
+                // fmt::println("valueChange last:{} new:{}", cb.second.valueStr, newValueStr);
                 if(newValueStr != cb.second.valueStr) {
-                    // fmt::println("hello 2 => {}", cb.second.cbData->value->format);
-                    // fmt::println("valueCbMap => vpiHandle: {} last:{} =/= new:{}", cb.first, cb.second.valueStr, newValueStr);
+                    // fmt::println("\tvalueCbMap => vpiHandle: {} last:{} =/= new:{}", cb.first, cb.second.valueStr, newValueStr);
+                    switch (cb.second.cbData->value->format) {
+                        case vpiIntVal:
+                            cb.second.cbData->value->value.integer = std::stoi(newValueStr);
+                            break;
+                        default:
+                            ASSERT(false, cb.second.cbData->value->format);
+                            break;
+                    }
                     cb.second.cbData->cb_rtn(cb.second.cbData.get());
-                    // fmt::println("hello 3");
                     cb.second.valueStr = newValueStr;
                 }
             }
@@ -198,9 +203,9 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
         case cbValueChange: {
             ASSERT(cb_data_p->obj != nullptr);
             ASSERT(cb_data_p->cb_rtn != nullptr);
-            if(cb_data_p->time != nullptr) {
-                ASSERT(cb_data_p->time->type == vpiSuppressTime);
-            }
+            ASSERT(cb_data_p->time != nullptr && cb_data_p->time->type == vpiSuppressTime);
+            ASSERT(cb_data_p->value != nullptr && cb_data_p->value->format == vpiIntVal);
+            
             auto t = *cb_data_p;
             willAppendValueCb.push_back(std::make_pair(vpiHandleAllcator, ValueCbInfo{
                 .cbData = std::make_shared<t_cb_data>(*cb_data_p), 
@@ -210,7 +215,7 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
             break;
         }
         case cbAfterDelay: {
-            ASSERT(cb_data_p->time->type == vpiSimTime);
+            ASSERT(cb_data_p->time != nullptr && cb_data_p->time->type == vpiSimTime);
             
             uint64_t time = (((uint64_t) cb_data_p->time->high << 32) | (cb_data_p->time->low));
             uint64_t targetTime = cursor.time + time;
