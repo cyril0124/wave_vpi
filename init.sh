@@ -13,3 +13,5 @@ git clone https://github.com/microsoft/vcpkg
 ./vcpkg/vcpkg install libbacktrace
 
 ./vcpkg/vcpkg install argparse
+
+cargo build --release
