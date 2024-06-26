@@ -141,11 +141,7 @@ vpiHandle vpi_handle_by_name(PLI_BYTE8 *name, vpiHandle scope) {
 }
 
 void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
-    // wellen_vpi_get_value(reinterpret_cast<void *>(object), cursor.time, value_p);
     wellen_vpi_get_value_from_index(reinterpret_cast<void *>(object), cursor.index, value_p);
-    // if(value_p->format == vpiVectorVal) {
-    //     fmt::println("[vpi_get_value] vectorVal => {}", value_p->value.vector[1].aval);
-    // }
 }
 
 PLI_BYTE8 *vpi_get_str(PLI_INT32 property, vpiHandle object) {

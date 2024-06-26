@@ -60,7 +60,7 @@ target("example")
     add_linkdirs(os.getenv("VERILUA_HOME") .. "/shared")
     add_linkdirs(os.getenv("VERILUA_HOME") .. "/luajit2.1/lib")
     
-    add_links("wave_vpi")
+    add_links("wave_vpi_wellen_impl")
     add_linkdirs("./target/release")
 
     add_runenvs("LD_LIBRARY_PATH", os.getenv("PWD") .. "/vcpkg/installed/x64-linux/lib")
@@ -68,7 +68,6 @@ target("example")
     add_runenvs("LD_LIBRARY_PATH", os.getenv("PWD") .. "/target/release")
 
     add_runenvs("PRJ_DIR", os.getenv("PWD"))
-    add_runenvs("DUT_TOP", "tb_top")
     add_runenvs("VERILUA_CFG", os.getenv("PWD") .. "/example/verilua_cfg_unknown")
 
 --
