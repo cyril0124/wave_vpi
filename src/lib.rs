@@ -3,14 +3,10 @@
 
 use byteorder::{BigEndian, ByteOrder};
 use bytesize::ByteSize;
-use indicatif::ProgressStyle;
-use std::borrow::{Borrow, BorrowMut};
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::thread;
 use wellen::*;
 
 mod vpi {
@@ -80,7 +76,7 @@ type vpiHandle = SignalRef;
 #[derive(Debug)]
 struct SignalInfo {
     pub signal: Signal,
-    pub var_type: VarType
+    pub var_type: VarType,
 }
 
 // static mut SIGNAL_CACHE: Option<HashMap<vpiHandle, Signal>> = None;
@@ -109,10 +105,13 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
                     SIGNAL_CACHE = Some(HashMap::new());
                 }
                 // SIGNAL_CACHE.as_mut().unwrap().insert(loaded_id.get_raw() as vpiHandle, loaded_signal);
-                SIGNAL_CACHE.as_mut().unwrap().insert(loaded_id, SignalInfo {
-                    signal: loaded_signal,
-                    var_type: var.var_type()
-                });
+                SIGNAL_CACHE.as_mut().unwrap().insert(
+                    loaded_id,
+                    SignalInfo {
+                        signal: loaded_signal,
+                        var_type: var.var_type(),
+                    },
+                );
 
                 // Some(loaded_id.get_raw() as vpiHandle)
                 Some(loaded_id as vpiHandle)
@@ -203,9 +202,10 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
     let loaded_signal = SIGNAL_CACHE.as_ref().unwrap().get(&(handle as vpiHandle)).unwrap().signal.borrow();
     let off = loaded_signal.get_offset(time_table_idx as u32).unwrap();
     let _wave_time = TIME_TABLE.as_ref().unwrap()[time_table_idx as usize];
-    let signal_value = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
+    let signal_bit_string = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
     let signal_v = loaded_signal.get_value_at(&off, 0);
 
+    // TODO: performance
     match signal_v {
         | SignalValue::Binary(data, _bits) => {
             let words = bytes_to_u32s_be(data);
@@ -215,10 +215,13 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
                 | vpiVectorVal => {
                     let mut vecvals = Vec::new();
                     for i in 0..words.len() {
-                        vecvals.insert(0, t_vpi_vecval {
-                            aval: words[i] as i32,
-                            bval: 0,
-                        });
+                        vecvals.insert(
+                            0,
+                            t_vpi_vecval {
+                                aval: words[i] as i32,
+                                bval: 0,
+                            },
+                        );
                     }
                     let vecvals_box = vecvals.into_boxed_slice();
                     let vecvals_ptr = vecvals_box.as_ptr() as *mut t_vpi_vecval;
@@ -228,6 +231,29 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
                 | vpiIntVal => {
                     let value = words[words.len() - 1] as i32;
                     (*value_p).value.integer = value;
+                }
+                | vpiHexStrVal => {
+                    const chunk_size: u32 = 4;
+                    // let hex_digits = _bits / chunk_size;
+
+                    let chunks: Vec<Vec<u8>> = signal_bit_string.as_bytes().chunks(chunk_size as usize).map(|chunk| chunk.iter().map(|&x| x - b'0').collect::<Vec<u8>>()).collect();
+                    let hex_string: String = chunks
+                        .iter()
+                        .map(|chunk| {
+                            let bin_value = chunk.iter().rev().enumerate().fold(0, |acc, (i, &b)| acc | (b << i));
+                            format!("{:x}", bin_value)
+                        })
+                        .collect();
+
+                    let c_string = CString::new(hex_string).expect("CString::new failed");
+                    let c_str_ptr = c_string.into_raw();
+                    (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
+                    // todo!("vpiHexStrVal signal_bit_string => {} bits => {} hex_digits => {} {}", signal_bit_string, _bits, hex_digits, hex_string);
+                }
+                | vpiBinStrVal => {
+                    let c_string = CString::new(signal_bit_string).expect("CString::new failed");
+                    let c_str_ptr = c_string.into_raw();
+                    (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
                 }
                 | _ => {
                     todo!("v_format => {}", v_format)
@@ -253,6 +279,11 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
                 | vpiIntVal => {
                     (*value_p).value.integer = 0;
                 }
+                | vpiBinStrVal => {
+                    let c_string = CString::new(signal_bit_string).expect("CString::new failed");
+                    let c_str_ptr = c_string.into_raw();
+                    (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
+                }
                 | _ => {
                     todo!("v_format => {}", v_format)
                 }
@@ -261,7 +292,7 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
         | _ => panic!("{:#?}", signal_v),
     }
 
-    // println!("[wellen_vpi_get_value] handle is {:?} format is {:?} value is {:?} signal_v is {:?}", handle, v_format, signal_value, signal_v);
+    // println!("[wellen_vpi_get_value] handle is {:?} format is {:?} value is {:?} signal_v is {:?}", handle, v_format, signal_bit_string, signal_v);
 }
 
 #[no_mangle]
@@ -275,11 +306,10 @@ pub unsafe extern "C" fn wellen_get_value_str(handle: *mut c_void, time_table_id
     let handle = unsafe { *{ handle as *mut vpiHandle } };
     let loaded_signal = SIGNAL_CACHE.as_ref().unwrap().get(&(handle as vpiHandle)).unwrap().signal.borrow();
     let off = loaded_signal.get_offset(time_table_idx as u32).unwrap();
-    let signal_value = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
-    let c_string = CString::new(signal_value).expect("CString::new failed");
+    let signal_bit_string = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
+    let c_string = CString::new(signal_bit_string).expect("CString::new failed");
     c_string.into_raw()
 }
-
 
 #[no_mangle]
 pub unsafe extern "C" fn wellen_vpi_get(property: PLI_INT32, handle: *mut c_void) -> PLI_INT32 {
@@ -289,10 +319,8 @@ pub unsafe extern "C" fn wellen_vpi_get(property: PLI_INT32, handle: *mut c_void
     let signal_v = loaded_signal.get_value_at(&off, 0);
 
     match property as u32 {
-        vpiSize => {
-            signal_v.bits().unwrap() as PLI_INT32
-        },
-        _ => {
+        | vpiSize => signal_v.bits().unwrap() as PLI_INT32,
+        | _ => {
             todo!("property => {}", property)
         }
     }
@@ -304,21 +332,16 @@ pub unsafe extern "C" fn wellen_vpi_get_str(property: PLI_INT32, handle: *mut c_
     let var_type = SIGNAL_CACHE.as_ref().unwrap().get(&(handle as vpiHandle)).unwrap().var_type.borrow();
 
     let c_string = match property as u32 {
-        vpiType => {
+        | vpiType => {
             match var_type {
-                VarType::Reg => {
-                    CString::new("vpiReg").unwrap()
-                },
-                VarType::Wire => {
-                    CString::new("vpiNet").unwrap()
-                },
-                _ => {
+                | VarType::Reg => CString::new("vpiReg").unwrap(),
+                | VarType::Wire => CString::new("vpiNet").unwrap(),
+                | _ => {
                     todo!("{:#?}", var_type)
-                }
-                // TODO: vpiRegArray vpiNetArray vpiMemory
+                } // TODO: vpiRegArray vpiNetArray vpiMemory
             }
-        },
-        _ => {
+        }
+        | _ => {
             todo!("property => {}", property)
         }
     };
@@ -333,7 +356,7 @@ pub unsafe extern "C" fn wellen_vpi_iterate(_type: PLI_INT32, refHandle: *mut c_
 
     if refHandle.is_null() {
         match _type as u32 {
-            vpiModule => {
+            | vpiModule => {
                 let r = scopes.into_iter().find_map(|scope_ref| {
                     let scope = hier.get(scope_ref);
                     let full_name = scope.full_name(hier);
@@ -350,8 +373,8 @@ pub unsafe extern "C" fn wellen_vpi_iterate(_type: PLI_INT32, refHandle: *mut c_
                     }
                 });
                 println!("iterate name => {}", r.unwrap());
-            },
-            _ => {
+            }
+            | _ => {
                 panic!("type => {}", _type)
             }
         }

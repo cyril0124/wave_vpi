@@ -48,7 +48,7 @@ target("example")
         set_optimize("none")
     end
 
-    add_cxflags("-DBOOST_STACKTRACE_USE_BACKTRACE")
+    add_defines("BOOST_STACKTRACE_USE_BACKTRACE")
 
     add_links("fmt")
     add_links("assert", "cpptrace", "dwarf", "zstd", "z")

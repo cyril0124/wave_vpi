@@ -35,9 +35,18 @@ TEST_CASE("vpi_get_value", "[vpi_get_value]") {
 
     for(int i = 0; i < 10; i++) {
         cursor.updateTime(i * 5);
+        v.format = vpiIntVal;
         vpi_get_value(reinterpret_cast<vpiHandle>(hdl2), &v);
         fmt::println("[{}] #{} v => {}", i, cursor.time, v.value.integer);
+
+        v.format = vpiBinStrVal;
+        vpi_get_value(reinterpret_cast<vpiHandle>(hdl2), &v);
+        fmt::println("[{}] #{} v => {}", i, cursor.time, v.value.str);
     }
+
+    v.format = vpiHexStrVal;
+    vpi_get_value(reinterpret_cast<vpiHandle>(hdl2), &v);
+    fmt::println("v => {}", v.value.str);
 }
 
 TEST_CASE("vpi_get/vpi_get_str", "[vpi_get/vpi_get_str]") {
