@@ -1,7 +1,7 @@
 #include "catch2/matchers/catch_matchers.hpp"
 #include "wave_vpi.h"
 #include "vpi_user.h"
-#include <catch.hpp>
+#include "catch2/catch_session.hpp"
 #include "catch2/catch_test_macros.hpp"
 #include "fmt/core.h"
 #include <cstdlib>

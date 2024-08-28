@@ -1,5 +1,9 @@
 add_rules("mode.debug", "mode.release")
 
+add_requires("conan::libassert/2.1.0", {alias = "libassert"})
+add_requires("conan::fmt/10.2.1", {alias = "fmt"})
+add_requires("conan::catch2/3.7.0", {alias = "catch2"})
+
 target("tests")
     set_kind("binary")
     add_files(
@@ -9,9 +13,7 @@ target("tests")
 
     add_includedirs(
         "./src", 
-        "./tests", 
-        "./vcpkg/installed/x64-linux", 
-        "./vcpkg/installed/x64-linux/include"
+        "./tests"
     )
 
     add_cxflags("-DNO_VLOG_STARTUP")
@@ -19,13 +21,9 @@ target("tests")
     add_links("wave_vpi")
     add_linkdirs("./target/release")
     
-    add_links("fmt")
-    add_links("assert", "cpptrace", "dwarf", "zstd", "z")
-    add_links("Catch2")
-    add_linkdirs("./vcpkg/installed/x64-linux/lib")
+    add_packages("fmt", "libassert", "catch2")
 
     add_runenvs("LD_LIBRARY_PATH", os.getenv("PWD") .. "/target/release")
-    add_runenvs("LD_LIBRARY_PATH", os.getenv("PWD") .. "/vcpkg/installed/x64-linux/lib")
     add_runenvs("PRJ_DIR", os.getenv("PWD"))
 
 --
