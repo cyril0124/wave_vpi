@@ -18,7 +18,7 @@ target("tests")
 
     add_cxflags("-DNO_VLOG_STARTUP")
 
-    add_links("wave_vpi")
+    add_links("wave_vpi_wellen_impl")
     add_linkdirs("./target/release")
     
     add_packages("fmt", "libassert", "catch2")
