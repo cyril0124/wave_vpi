@@ -4,5 +4,5 @@ git submodule update --init --recursive
 
 cargo build --release
 
-xmake -y
+xmake -y -P .
 
