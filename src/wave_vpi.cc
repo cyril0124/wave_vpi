@@ -29,7 +29,44 @@ void wave_vpi_init(const char *filename) {
     cursor.maxTime = wellen_get_time_from_index(cursor.maxIndex);
 }
 
+void endOfSimulation() {
+    if(endOfSimulationCb) {
+        wellen_vpi_finalize();
+        endOfSimulationCb->cb_rtn(endOfSimulationCb.get());
+    }
+}
+
+void sigint_handler(int unused) {
+    endOfSimulation();
+    
+    VL_WARN(R"(
+---------------------------------------------------------------------
+----   wave_vpi_main get <SIGINT>, the program will terminate...      ----
+---------------------------------------------------------------------
+)");
+
+    exit(0);
+}
+
+void sigabrt_handler(int unused) {
+    endOfSimulation();
+    
+    VL_WARN(R"(
+---------------------------------------------------------------------
+----   wave_vpi_main get <SIGABRT>, the program will terminate...      ----
+---------------------------------------------------------------------
+)");
+
+    exit(0);
+}
+
 void wave_vpi_main() {
+    // 
+    // Setup SIG handler
+    // 
+    std::signal(SIGINT, sigint_handler); // Deal with Ctrl-C
+    std::signal(SIGABRT, sigabrt_handler); // Deal with assert
+
 #ifndef NO_VLOG_STARTUP
     vlog_startup_routines_bootstrap();
 #endif
@@ -108,10 +145,7 @@ void wave_vpi_main() {
         cursor.index++;
     }
 
-    if(endOfSimulationCb) {
-        wellen_vpi_finalize();
-        endOfSimulationCb->cb_rtn(endOfSimulationCb.get());
-    }
+    endOfSimulation();
 }
 
 
@@ -173,6 +207,7 @@ PLI_INT32 vpi_control(PLI_INT32 operation, ...) {
     switch (operation) {
         case vpiStop:
         case vpiFinish:
+            endOfSimulation();
             exit(0);
             break;
         default:

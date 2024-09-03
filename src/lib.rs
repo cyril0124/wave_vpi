@@ -3,10 +3,16 @@
 
 use byteorder::{BigEndian, ByteOrder};
 use bytesize::ByteSize;
+use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::fs;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
 use std::os::raw::{c_char, c_void};
+use std::os::unix::fs::MetadataExt;
+use std::time::UNIX_EPOCH;
 use wellen::*;
 
 #[allow(warnings)]
@@ -45,6 +51,29 @@ const LOAD_OPTS: LoadOptions = LoadOptions {
     remove_scopes_with_empty_name: false,
 };
 
+#[allow(non_camel_case_types)]
+type vpiHandle = SignalRef;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FileModifiedInfo {
+    size: u64,
+    time: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SignalInfo {
+    pub signal: Signal,
+    pub var_type: VarType,
+}
+
+static mut SIGNAL_REF_CACHE: Option<HashMap<String, SignalRef>> = None;
+static mut SIGNAL_CACHE: Option<HashMap<SignalRef, SignalInfo>> = None;
+static mut HAS_NEWLY_ADD_SIGNAL_REF: bool = false;
+
+const LAST_MODIFIED_TIME_FILE: &str = "last_modified_time.wave_vpi.yaml";
+const SIGNAL_REF_CACHE_FILE: &str = "signal_ref_cache.wave_vpi.yaml";
+const SIGNAL_CACHE_FILE: &str = "signal_cache.wave_vpi.yaml";
+
 #[no_mangle]
 pub extern "C" fn wellen_wave_init(filename: *const c_char) {
     let c_str = unsafe {
@@ -60,27 +89,100 @@ pub extern "C" fn wellen_wave_init(filename: *const c_char) {
     let body = viewers::read_body(header.body, &hierarchy, None).expect("Failed to load body!");
     let wave_source = body.source;
     wave_source.print_statistics();
-    println!("The hierarchy takes up at least {} of memory.", ByteSize::b(hierarchy.size_in_memory() as u64));
+    println!("[wellen_wave_init] The hierarchy takes up at least {} of memory.", ByteSize::b(hierarchy.size_in_memory() as u64));
 
     unsafe {
         TIME_TABLE = Some(body.time_table);
         HIERARCHY = Some(hierarchy);
         WAVE_SOURCE = Some(wave_source);
 
-        println!("Time table size: {}", TIME_TABLE.clone().unwrap().len());
+        println!("[wellen_wave_init] Time table size: {}", TIME_TABLE.clone().unwrap().len());
+    }
+
+    // If the wave file has not been modified, we can use the cached data to speed up the simulation.
+    let mut use_cached_data = false;
+    if let Ok(file) = File::open(LAST_MODIFIED_TIME_FILE) {
+        let reader = BufReader::new(file);
+        let modified_time: FileModifiedInfo = serde_yaml::from_reader(reader).expect(format!("Failed to parse {}", LAST_MODIFIED_TIME_FILE).as_str());
+        let last_modified_timestamp = modified_time.time;
+        let last_file_size = modified_time.size;
+
+        let metadata = fs::metadata(filename).expect("Failed to get file metadata");
+        let file_size = metadata.size();
+        let modified = metadata.modified().expect("Failed to get modified time");
+        let duration_since_epoch = modified.duration_since(UNIX_EPOCH).unwrap();
+        let modified_timestamp = duration_since_epoch.as_secs();
+
+        // Update the timestamp if the file has been modified.
+        if last_modified_timestamp != modified_timestamp || last_file_size != file_size {
+            let file = File::create(LAST_MODIFIED_TIME_FILE).unwrap();
+            let writer = BufWriter::new(file);
+
+            let modified_time = FileModifiedInfo {
+                size: file_size,
+                time: modified_timestamp,
+            };
+
+            println!("[wellen_wave_init] modified_timestamp: last({}) curr({})  file_size: last({}) curr({})", last_modified_timestamp, modified_timestamp, last_file_size, file_size);
+
+            serde_yaml::to_writer(writer, &modified_time).unwrap();
+        } else {
+            use_cached_data = true;
+        }
+    } else {
+        // Create new file if it does not exist.
+        let metadata = fs::metadata(filename).expect("Failed to get file metadata");
+        let file_size = metadata.size();
+        let modified = metadata.modified().expect("Failed to get modified time");
+        let duration_since_epoch = modified.duration_since(UNIX_EPOCH).unwrap();
+        let modified_timestamp = duration_since_epoch.as_secs();
+
+        let file = File::create(LAST_MODIFIED_TIME_FILE).unwrap();
+        let writer = BufWriter::new(file);
+
+        let modified_time = FileModifiedInfo {
+            size: file_size,
+            time: modified_timestamp,
+        };
+
+        println!("[wellen_wave_init] modified_timestamp(new): {}  file_size(new): {}", modified_timestamp, file_size);
+
+        serde_yaml::to_writer(writer, &modified_time).unwrap();
+    }
+    println!("[wellen_wave_init] use_cached_data => {}", use_cached_data);
+
+    unsafe {
+        if SIGNAL_REF_CACHE.is_none() {
+            if use_cached_data {
+                let _file = File::open(SIGNAL_REF_CACHE_FILE);
+                if let Ok(file) = _file {
+                    let reader = BufReader::new(file);
+                    SIGNAL_REF_CACHE = Some(serde_yaml::from_reader(reader).unwrap());
+                } else {
+                    println!("[wellen_wave_init] Failed to open signal ref cache file: {}", SIGNAL_REF_CACHE_FILE);
+                    SIGNAL_REF_CACHE = Some(HashMap::new());
+                }
+            } else {
+                SIGNAL_REF_CACHE = Some(HashMap::new());
+            }
+        }
+
+        if SIGNAL_CACHE.is_none() {
+            if use_cached_data {
+                let _file = File::open(SIGNAL_CACHE_FILE);
+                if let Ok(file) = _file {
+                    let reader = BufReader::new(file);
+                    SIGNAL_CACHE = Some(serde_yaml::from_reader(reader).unwrap());
+                } else {
+                    println!("[wellen_wave_init] Failed to open signal cache file: {}", SIGNAL_CACHE_FILE);
+                    SIGNAL_CACHE = Some(HashMap::new());
+                }
+            } else {
+                SIGNAL_CACHE = Some(HashMap::new());
+            }
+        }
     }
 }
-
-#[allow(non_camel_case_types)]
-type vpiHandle = SignalRef;
-
-#[derive(Debug)]
-struct SignalInfo {
-    pub signal: Signal,
-    pub var_type: VarType,
-}
-
-static mut SIGNAL_CACHE: Option<HashMap<SignalRef, SignalInfo>> = None;
 
 #[no_mangle]
 pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut c_void {
@@ -91,6 +193,13 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
     .to_str()
     .unwrap();
 
+    let id_opt = SIGNAL_REF_CACHE.as_mut().unwrap().get(&name.to_string());
+    if let Some(id) = id_opt {
+        // println!("[wellen_vpi_handle_by_name] find vpiHandle => name:{} id:{:?}", name, id);
+        let value = Box::new(id.clone() as vpiHandle);
+        return Box::into_raw(value) as *mut c_void;
+    }
+
     let id = unsafe {
         HIERARCHY.as_ref().unwrap().iter_vars().find_map(|var| {
             let signal_name = var.full_name(&HIERARCHY.as_ref().unwrap());
@@ -100,9 +209,6 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
                 let (loaded_id, loaded_signal) = loaded.into_iter().next().unwrap();
                 assert_eq!(loaded_id, ids[0]);
 
-                if SIGNAL_CACHE.is_none() {
-                    SIGNAL_CACHE = Some(HashMap::new());
-                }
                 SIGNAL_CACHE.as_mut().unwrap().insert(
                     loaded_id,
                     SignalInfo {
@@ -119,6 +225,9 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
     };
     assert!(id.is_some(), "[wellen_vpi_handle_by_name] cannot find vpiHandle => name:{}", name);
     // println!("[wellen_vpi_handle_by_name] find vpiHandle => name:{} id:{:?}", name, id);
+
+    SIGNAL_REF_CACHE.as_mut().unwrap().insert(name.to_string(), id.unwrap());
+    HAS_NEWLY_ADD_SIGNAL_REF = true;
 
     let value = Box::new(id.unwrap() as vpiHandle);
     Box::into_raw(value) as *mut c_void
@@ -400,4 +509,19 @@ pub unsafe extern "C" fn wellen_get_max_index() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn wellen_vpi_finalize() {
     println!("[wellen_vpi_finalize] ... ");
+    if HAS_NEWLY_ADD_SIGNAL_REF {
+        println!("[wellen_vpi_finalize] save signal ref into cache file");
+
+        if let Some(ref cache) = SIGNAL_REF_CACHE {
+            let file = File::create(SIGNAL_REF_CACHE_FILE).unwrap();
+            serde_yaml::to_writer(file, cache).unwrap();
+        }
+
+        if let Some(ref cache) = SIGNAL_CACHE {
+            let file = File::create(SIGNAL_CACHE_FILE).unwrap();
+            serde_yaml::to_writer(file, cache).unwrap();
+        }
+    } else {
+        println!("[wellen_vpi_finalize] no newly added signal ref")
+    }
 }
