@@ -127,7 +127,7 @@ PLI_INT32 vpi_free_object(vpiHandle object) {
 }
 
 PLI_INT32 vpi_release_handle(vpiHandle object) {
-    vpi_free_object(object);
+    return vpi_free_object(object);
 }
 
 vpiHandle vpi_put_value(vpiHandle object, p_vpi_value value_p, p_vpi_time time_p, PLI_INT32 flags) {

@@ -9,6 +9,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use wellen::*;
 
+#[allow(warnings)]
 mod vpi {
     include!("vpi_user.rs");
 }
@@ -70,7 +71,7 @@ pub extern "C" fn wellen_wave_init(filename: *const c_char) {
     }
 }
 
-// type vpiHandle = u32;
+#[allow(non_camel_case_types)]
 type vpiHandle = SignalRef;
 
 #[derive(Debug)]
@@ -79,7 +80,6 @@ struct SignalInfo {
     pub var_type: VarType,
 }
 
-// static mut SIGNAL_CACHE: Option<HashMap<vpiHandle, Signal>> = None;
 static mut SIGNAL_CACHE: Option<HashMap<SignalRef, SignalInfo>> = None;
 
 #[no_mangle]
@@ -92,7 +92,6 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
     .unwrap();
 
     let id = unsafe {
-        // HIERARCHY.as_ref().unwrap().get_unique_signals_vars().iter().flatten().find_map(|var| {
         HIERARCHY.as_ref().unwrap().iter_vars().find_map(|var| {
             let signal_name = var.full_name(&HIERARCHY.as_ref().unwrap());
             if signal_name == name.to_string() {
@@ -104,7 +103,6 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
                 if SIGNAL_CACHE.is_none() {
                     SIGNAL_CACHE = Some(HashMap::new());
                 }
-                // SIGNAL_CACHE.as_mut().unwrap().insert(loaded_id.get_raw() as vpiHandle, loaded_signal);
                 SIGNAL_CACHE.as_mut().unwrap().insert(
                     loaded_id,
                     SignalInfo {
@@ -113,7 +111,6 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
                     },
                 );
 
-                // Some(loaded_id.get_raw() as vpiHandle)
                 Some(loaded_id as vpiHandle)
             } else {
                 None
@@ -123,20 +120,18 @@ pub unsafe extern "C" fn wellen_vpi_handle_by_name(name: *const c_char) -> *mut 
     assert!(id.is_some(), "[wellen_vpi_handle_by_name] cannot find vpiHandle => name:{}", name);
     // println!("[wellen_vpi_handle_by_name] find vpiHandle => name:{} id:{:?}", name, id);
 
-    // println!("{:#?}", unsafe { SIGNAL_CACHE.as_ref().unwrap()});
-
     let value = Box::new(id.unwrap() as vpiHandle);
     Box::into_raw(value) as *mut c_void
 }
 
 #[no_mangle]
-pub extern "C" fn wellen_vpi_release_handle(handle: *mut c_void) {
+pub extern "C" fn wellen_vpi_release_handle(_handle: *mut c_void) {
     todo!();
-    if !handle.is_null() {
-        unsafe {
-            Box::from_raw(handle as *mut vpiHandle);
-        }
-    }
+    // if !handle.is_null() {
+    //     unsafe {
+    //         Box::from_raw(_handle as *mut vpiHandle);
+    //     }
+    // }
 }
 
 fn bytes_to_u32s_be(bytes: &[u8]) -> Vec<u32> {
@@ -265,7 +260,7 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
                 | vpiVectorVal => {
                     let vec_len = cover_with_32(bits as usize);
                     let mut vecvals = Vec::new();
-                    for i in 0..vec_len {
+                    for _i in 0..vec_len {
                         vecvals.push(t_vpi_vecval {
                             aval: 0,
                             bval: 0,
