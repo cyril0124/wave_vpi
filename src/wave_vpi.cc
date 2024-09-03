@@ -109,6 +109,7 @@ void wave_vpi_main() {
     }
 
     if(endOfSimulationCb) {
+        wellen_vpi_finalize();
         endOfSimulationCb->cb_rtn(endOfSimulationCb.get());
     }
 }

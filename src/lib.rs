@@ -401,3 +401,8 @@ pub extern "C" fn wellen_get_index_from_time(time: u64) -> u64 {
 pub unsafe extern "C" fn wellen_get_max_index() -> u64 {
     (TIME_TABLE.as_ref().unwrap().len() - 1) as u64
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn wellen_vpi_finalize() {
+    println!("[wellen_vpi_finalize] ... ");
+}

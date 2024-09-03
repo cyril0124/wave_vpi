@@ -36,6 +36,8 @@ extern "C" {
     uint64_t wellen_get_index_from_time(uint64_t time);
 
     char *wellen_get_value_str(void *handle, uint64_t time_table_idx);
+
+    void wellen_vpi_finalize();
 }
 
 
