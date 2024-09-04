@@ -30,7 +30,10 @@ void wave_vpi_init(const char *filename) {
 }
 
 void endOfSimulation() {
-    if(endOfSimulationCb) {
+    static bool isEndOfSimulation = false;
+    
+    if(endOfSimulationCb && !isEndOfSimulation) {
+        isEndOfSimulation = true;
         wellen_vpi_finalize();
         endOfSimulationCb->cb_rtn(endOfSimulationCb.get());
     }
