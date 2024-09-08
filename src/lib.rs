@@ -154,12 +154,13 @@ pub extern "C" fn wellen_wave_init(filename: *const c_char) {
     unsafe {
         if SIGNAL_REF_CACHE.is_none() {
             if use_cached_data {
+                println!("[wellen_wave_init] start read {}", SIGNAL_REF_CACHE_FILE);
                 let _file = File::open(SIGNAL_REF_CACHE_FILE);
                 if let Ok(file) = _file {
                     let reader = BufReader::new(file);
                     SIGNAL_REF_CACHE = Some(serde_yaml::from_reader(reader).unwrap());
                 } else {
-                    println!("[wellen_wave_init] Failed to open signal ref cache file: {}", SIGNAL_REF_CACHE_FILE);
+                    println!("[wellen_wave_init] Failed to open {}", SIGNAL_REF_CACHE_FILE);
                     SIGNAL_REF_CACHE = Some(HashMap::new());
                 }
             } else {
@@ -169,6 +170,7 @@ pub extern "C" fn wellen_wave_init(filename: *const c_char) {
 
         if SIGNAL_CACHE.is_none() {
             if use_cached_data {
+                println!("[wellen_wave_init] start read {}", SIGNAL_CACHE_FILE);
                 let _file = File::open(SIGNAL_CACHE_FILE);
                 if let Ok(file) = _file {
                     let reader = BufReader::new(file);
@@ -182,6 +184,8 @@ pub extern "C" fn wellen_wave_init(filename: *const c_char) {
             }
         }
     }
+
+    println!("[wellen_wave_init] init finish...");
 }
 
 #[no_mangle]
