@@ -15,9 +15,15 @@ std::unique_ptr<s_cb_data> endOfSimulationCb = NULL;
 
 std::queue<std::pair<uint64_t, std::shared_ptr<t_cb_data>>> timeCbQueue;
 
+// The nextSimTimeQueue is a queue of callbacks that will be called at the next simulation time.
+std::vector<std::shared_ptr<t_cb_data>> nextSimTimeQueue;
+std::vector<std::shared_ptr<t_cb_data>> willAppendNextSimTimeQueue;
+
 std::unordered_map<vpiHandleRaw, ValueCbInfo> valueCbMap;
 std::vector<std::pair<vpiHandleRaw, ValueCbInfo>> willAppendValueCb;
 std::vector<vpiHandleRaw> willRemoveValueCb;
+
+// The vpiHandleAllocator is a counter that counts the number of vpiHandles allocated which make it easy to provide unique vpiHandle values.
 vpiHandleRaw vpiHandleAllcator = 0;
 
 extern "C" void vlog_startup_routines_bootstrap();
@@ -63,27 +69,7 @@ void sigabrt_handler(int unused) {
     exit(0);
 }
 
-void wave_vpi_main() {
-    // 
-    // Setup SIG handler
-    // 
-    std::signal(SIGINT, sigint_handler); // Deal with Ctrl-C
-    std::signal(SIGABRT, sigabrt_handler); // Deal with assert
-
-#ifndef NO_VLOG_STARTUP
-    vlog_startup_routines_bootstrap();
-#endif
-
-    if(startOfSimulationCb) {
-        startOfSimulationCb->cb_rtn(startOfSimulationCb.get());
-    }
-
-    // 
-    // evaluation loop
-    // 
-    ASSERT(cursor.maxIndex != 0);
-    fmt::println("cursor.maxIndex => {} time => {} cursor.maxTime => {}", cursor.maxIndex, wellen_get_time_from_index(cursor.maxIndex), cursor.maxTime);
-    
+inline static void appendValueCb() {
     if(!willAppendValueCb.empty()) {
         for(auto &cb : willAppendValueCb) {
             valueCbMap[cb.first] = cb.second;
@@ -91,11 +77,52 @@ void wave_vpi_main() {
         }
         willAppendValueCb.clear();
     }
-    
+}
+
+inline static void removeValueCb() {
+    if(!willRemoveValueCb.empty()) {
+        for(auto &cb : willRemoveValueCb) {
+            valueCbMap.erase(cb);
+            // fmt::println("remove {}", cb);
+        }
+        willRemoveValueCb.clear();
+    }
+}
+
+inline static void appendNextSimTimeCb() {
+    for(auto &cb : willAppendNextSimTimeQueue) {
+        nextSimTimeQueue.emplace_back(cb);
+        // fmt::println("append nextSimTimeCb");
+    }
+    willAppendNextSimTimeQueue.clear();
+}
+
+
+void wave_vpi_main() {
+    // Setup SIG handler so that we can exit gracefully
+    std::signal(SIGINT, sigint_handler); // Deal with Ctrl-C
+    std::signal(SIGABRT, sigabrt_handler); // Deal with assert
+
+#ifndef NO_VLOG_STARTUP
+    // Manually call vlog_startup_routines_bootstrap(), which is called at the beginning of the simulation according to VPI standard specification.
+    vlog_startup_routines_bootstrap();
+#endif
+
+    // Call startOfSimulationCb if it exists
+    if(startOfSimulationCb) {
+        startOfSimulationCb->cb_rtn(startOfSimulationCb.get());
+    }
+
+    // Append callbacks which is registered from startOfSimulationCb
+    appendNextSimTimeCb();
+    appendValueCb();
+
+    // Start wave_vpi evaluation loop
+    ASSERT(cursor.maxIndex != 0);
+    fmt::println("cursor.maxIndex => {} time => {} cursor.maxTime => {}", cursor.maxIndex, wellen_get_time_from_index(cursor.maxIndex), cursor.maxTime);
+
     while(cursor.index < cursor.maxIndex) {
-        // 
-        // time callback
-        // 
+        // Deal with cbAfterDelay(time) callbacks
         if(!timeCbQueue.empty()) {
             bool again = cursor.index >= timeCbQueue.front().first;
             while(again) {
@@ -106,17 +133,20 @@ void wave_vpi_main() {
             }
         }
 
-        // 
-        // value callback
-        // 
+        // Deal with cbValueChange callbacks
         for(auto &cb : valueCbMap) {
             if (cb.second.cbData->cb_rtn != nullptr) {
                 ASSERT(cb.second.cbData->obj != nullptr);
                 ASSERT(cb.second.cbData->cb_rtn != nullptr);
+
+                // All the value change comparision is done by comparing the string of the value, which provides a more robust way to compare the value.
                 auto newValueStr = _wellen_get_value_str(&cb.second.handle);
                 // fmt::println("valueChange last:{} new:{}", cb.second.valueStr, newValueStr);
+                
                 if(newValueStr != cb.second.valueStr) {
                     // fmt::println("\tvalueCbMap => vpiHandle: {} last:{} =/= new:{}", cb.first, cb.second.valueStr, newValueStr);
+                    
+                    // For now, the value change callback is only supported in vpiIntVal format.
                     switch (cb.second.cbData->value->format) {
                         case vpiIntVal:
                             cb.second.cbData->value->value.integer = std::stoi(newValueStr);
@@ -131,23 +161,20 @@ void wave_vpi_main() {
             }
         }
 
-        if(!willRemoveValueCb.empty()) {
-            for(auto &handle : willRemoveValueCb) {
-                valueCbMap.erase(handle);
-            }
-            willRemoveValueCb.clear();
+        // Deal with cbNextSimTime callbacks
+        for(auto &cb : nextSimTimeQueue) {
+            cb->cb_rtn(cb.get());
         }
+        nextSimTimeQueue.clear(); // Clean the current cbNextSimTime callbacks
+        appendNextSimTimeCb(); // Append callbacks which is registered from cbNextSimTime callbacks
 
-        if(!willAppendValueCb.empty()) {
-            for(auto &cb : willAppendValueCb) {
-                valueCbMap[cb.first] = cb.second;
-            }
-            willAppendValueCb.clear();
-        }
+        removeValueCb(); // Remove finished cbValueChange callbacks
+        appendValueCb(); // Register newly registered cbValueChange callbacks from the previous cbNextSimTime callback
 
-        cursor.index++;
+        cursor.index++; // Next simulation step
     }
-
+    
+    // End of simulation
     endOfSimulation();
 }
 
@@ -242,7 +269,7 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
             ASSERT(cb_data_p->value != nullptr && cb_data_p->value->format == vpiIntVal);
             
             auto t = *cb_data_p;
-            willAppendValueCb.push_back(std::make_pair(vpiHandleAllcator, ValueCbInfo{
+            willAppendValueCb.emplace_back(std::make_pair(vpiHandleAllcator, ValueCbInfo{
                 .cbData = std::make_shared<t_cb_data>(*cb_data_p), 
                 .handle = *cb_data_p->obj,
                 .valueStr = _wellen_get_value_str(cb_data_p->obj), 
@@ -258,6 +285,14 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
             ASSERT(targetTime <= cursor.maxTime);
 
             timeCbQueue.push(std::make_pair(targetIndex, std::make_shared<t_cb_data>(*cb_data_p)));
+            break;
+        }
+        case cbNextSimTime: {
+            ASSERT(cb_data_p->cb_rtn != nullptr);
+            ASSERT(cb_data_p->obj == nullptr); // cbNextSimTime callbacks do not have an object handle.
+            ASSERT(cb_data_p->value == nullptr);
+            
+            willAppendNextSimTimeQueue.emplace_back(std::make_shared<t_cb_data>(*cb_data_p));
             break;
         }
         default:
@@ -277,14 +312,14 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
 PLI_INT32 vpi_remove_cb(vpiHandle cb_obj) {
     ASSERT(cb_obj != nullptr);
     if(valueCbMap.find(*cb_obj) != valueCbMap.end()) {
-        willRemoveValueCb.push_back(*cb_obj);
+        willRemoveValueCb.emplace_back(*cb_obj);
     }
     delete cb_obj;
     return 0;
 }
 
 // Unsupport:
-//      vpi_put_value(handle, &v, NULL, vpiNoDelay);
+//      vpi_put_value(handle, &v, NULL, vpiNoDelay); // wave_vpi is considered a read-only waveform simulate backend in verilua
 // 
 // Supported:
 //      OK => vpi_get_value(handle, &v);
