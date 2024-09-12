@@ -66,11 +66,14 @@ struct SignalInfo {
     pub var_type: VarType,
 }
 
+const SIGNAL_REF_COUNT_THRESHOLD: usize = 15; // If the cached signal ref count is greater than this, we will not use the cached data.
+
 static mut SIGNAL_REF_CACHE: Option<HashMap<String, SignalRef>> = None;
 static mut SIGNAL_CACHE: Option<HashMap<SignalRef, SignalInfo>> = None;
 static mut HAS_NEWLY_ADD_SIGNAL_REF: bool = false;
 
 const LAST_MODIFIED_TIME_FILE: &str = "last_modified_time.wave_vpi.yaml";
+const SIGNAL_REF_COUNT_FILE: &str = "signal_ref_count.wave_vpi.yaml";
 const SIGNAL_REF_CACHE_FILE: &str = "signal_ref_cache.wave_vpi.yaml";
 const SIGNAL_CACHE_FILE: &str = "signal_cache.wave_vpi.yaml";
 
@@ -127,7 +130,19 @@ pub extern "C" fn wellen_wave_init(filename: *const c_char) {
 
             serde_yaml::to_writer(writer, &modified_time).unwrap();
         } else {
-            use_cached_data = true;
+            if let Ok(file) = File::open(SIGNAL_REF_COUNT_FILE) {
+                let reader: BufReader<File> = BufReader::new(file);
+                let signal_ref_count: usize = serde_yaml::from_reader(reader).expect(format!("Failed to parse {}", SIGNAL_REF_COUNT_FILE).as_str());
+
+                let signal_ref_count_threshold = SIGNAL_REF_COUNT_THRESHOLD;
+                println!("[wellen_wave_init] signal_ref_count: {} signal_ref_count_threshold: {}", signal_ref_count, signal_ref_count_threshold);
+
+                if signal_ref_count >= signal_ref_count_threshold {
+                    use_cached_data = true;
+                }
+            } else {
+                use_cached_data = true;
+            }
         }
     } else {
         // Create new file if it does not exist.
@@ -513,19 +528,29 @@ pub unsafe extern "C" fn wellen_get_max_index() -> u64 {
 #[no_mangle]
 pub unsafe extern "C" fn wellen_vpi_finalize() {
     println!("[wellen_vpi_finalize] ... ");
-    if HAS_NEWLY_ADD_SIGNAL_REF {
-        println!("[wellen_vpi_finalize] save signal ref into cache file");
 
-        if let Some(ref cache) = SIGNAL_REF_CACHE {
-            let file = File::create(SIGNAL_REF_CACHE_FILE).unwrap();
-            serde_yaml::to_writer(file, cache).unwrap();
-        }
+    if SIGNAL_REF_CACHE.as_ref().unwrap().len() >= SIGNAL_REF_COUNT_THRESHOLD {
+        if HAS_NEWLY_ADD_SIGNAL_REF {
+            println!("[wellen_vpi_finalize] save signal ref into cache file");
 
-        if let Some(ref cache) = SIGNAL_CACHE {
-            let file = File::create(SIGNAL_CACHE_FILE).unwrap();
-            serde_yaml::to_writer(file, cache).unwrap();
+            if let Some(ref cache) = SIGNAL_REF_CACHE {
+                let file: File = File::create(SIGNAL_REF_COUNT_FILE).unwrap();
+                serde_yaml::to_writer(file, &cache.len()).unwrap();
+            }
+
+            if let Some(ref cache) = SIGNAL_REF_CACHE {
+                let file = File::create(SIGNAL_REF_CACHE_FILE).unwrap();
+                serde_yaml::to_writer(file, cache).unwrap();
+            }
+
+            if let Some(ref cache) = SIGNAL_CACHE {
+                let file = File::create(SIGNAL_CACHE_FILE).unwrap();
+                serde_yaml::to_writer(file, cache).unwrap();
+            }
+        } else {
+            println!("[wellen_vpi_finalize] no newly added signal ref")
         }
     } else {
-        println!("[wellen_vpi_finalize] no newly added signal ref")
+        println!("[wellen_vpi_finalize] signal ref count is too small, not save cache file! signal_ref_count: {} < threshold: {}", SIGNAL_REF_CACHE.as_ref().unwrap().len(), SIGNAL_REF_COUNT_THRESHOLD);
     }
 }
