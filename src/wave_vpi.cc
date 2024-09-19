@@ -14,6 +14,7 @@ std::unique_ptr<s_cb_data> startOfSimulationCb = NULL;
 std::unique_ptr<s_cb_data> endOfSimulationCb = NULL;
 
 std::queue<std::pair<uint64_t, std::shared_ptr<t_cb_data>>> timeCbQueue;
+std::vector<std::pair<uint64_t, std::shared_ptr<t_cb_data>>> willAppendTimeCbQueue;
 
 // The nextSimTimeQueue is a queue of callbacks that will be called at the next simulation time.
 std::vector<std::shared_ptr<t_cb_data>> nextSimTimeQueue;
@@ -69,6 +70,15 @@ void sigabrt_handler(int unused) {
     exit(0);
 }
 
+
+inline static void appendTimeCb() {
+    for(auto &cb : willAppendTimeCbQueue) {
+        timeCbQueue.push(cb);
+        // fmt::println("append appendTimeCb");
+    }
+    willAppendTimeCbQueue.clear();
+}
+
 inline static void appendValueCb() {
     if(!willAppendValueCb.empty()) {
         for(auto &cb : willAppendValueCb) {
@@ -114,12 +124,13 @@ void wave_vpi_main() {
     }
 
     // Append callbacks which is registered from startOfSimulationCb
+    appendTimeCb();
     appendNextSimTimeCb();
     appendValueCb();
 
     // Start wave_vpi evaluation loop
     ASSERT(cursor.maxIndex != 0);
-    fmt::println("cursor.maxIndex => {} time => {} cursor.maxTime => {}", cursor.maxIndex, wellen_get_time_from_index(cursor.maxIndex), cursor.maxTime);
+    fmt::println("[wave_vpi] START! cursor.maxIndex => {} time => {} cursor.maxTime => {}", cursor.maxIndex, wellen_get_time_from_index(cursor.maxIndex), cursor.maxTime);
 
     while(cursor.index < cursor.maxIndex) {
         // Deal with cbAfterDelay(time) callbacks
@@ -132,6 +143,7 @@ void wave_vpi_main() {
                 again = !timeCbQueue.empty() && cursor.index >= timeCbQueue.front().first;
             }
         }
+        appendTimeCb();
 
         // Deal with cbValueChange callbacks
         for(auto &cb : valueCbMap) {
@@ -173,6 +185,8 @@ void wave_vpi_main() {
 
         cursor.index++; // Next simulation step
     }
+    
+    fmt::println("[wave_vpi] FINISH! cursor.index => {} cursor.maxIndex => {}", cursor.index, cursor.maxIndex);
     
     // End of simulation
     endOfSimulation();
@@ -284,7 +298,7 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
             uint64_t targetIndex = wellen_get_index_from_time(targetTime);            
             ASSERT(targetTime <= cursor.maxTime);
 
-            timeCbQueue.push(std::make_pair(targetIndex, std::make_shared<t_cb_data>(*cb_data_p)));
+            willAppendTimeCbQueue.emplace_back(std::make_pair(targetIndex, std::make_shared<t_cb_data>(*cb_data_p)));
             break;
         }
         case cbNextSimTime: {
