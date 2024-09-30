@@ -323,96 +323,138 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
     let v_format = value_p.read().format;
 
     let loaded_signal = SIGNAL_CACHE.as_ref().unwrap().get(&(handle as vpiHandle)).unwrap().signal.borrow();
-    let off = loaded_signal.get_offset(time_table_idx as u32).unwrap();
-    let _wave_time = TIME_TABLE.as_ref().unwrap()[time_table_idx as usize];
-    let signal_bit_string = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
-    let signal_v = loaded_signal.get_value_at(&off, 0);
+    let off = loaded_signal.get_offset(time_table_idx as u32);
 
-    // TODO: performance
-    match signal_v {
-        | SignalValue::Binary(data, _bits) => {
-            let words = bytes_to_u32s_be(data);
-            // println!("data => {:?} ww => {:?}   {}", data, words, words[words.len() - 1]);
+    if let Some(off) = off {
+        let _wave_time = TIME_TABLE.as_ref().unwrap()[time_table_idx as usize];
+        let signal_bit_string = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
+        let signal_v = loaded_signal.get_value_at(&off, 0);
 
-            match v_format as u32 {
-                | vpiVectorVal => {
-                    let mut vecvals = Vec::new();
-                    for i in 0..words.len() {
-                        vecvals.insert(
-                            0,
-                            t_vpi_vecval {
-                                aval: words[i] as i32,
+        // TODO: performance
+        match signal_v {
+            | SignalValue::Binary(data, _bits) => {
+                let words = bytes_to_u32s_be(data);
+                // println!("data => {:?} ww => {:?}   {}", data, words, words[words.len() - 1]);
+
+                match v_format as u32 {
+                    | vpiVectorVal => {
+                        let mut vecvals = Vec::new();
+                        for i in 0..words.len() {
+                            vecvals.insert(
+                                0,
+                                t_vpi_vecval {
+                                    aval: words[i] as i32,
+                                    bval: 0,
+                                },
+                            );
+                        }
+                        let vecvals_box = vecvals.into_boxed_slice();
+                        let vecvals_ptr = vecvals_box.as_ptr() as *mut t_vpi_vecval;
+                        let _ = Box::into_raw(vecvals_box);
+                        (*value_p).value.vector = vecvals_ptr;
+                    }
+                    | vpiIntVal => {
+                        let value = words[words.len() - 1] as i32;
+                        (*value_p).value.integer = value;
+                    }
+                    | vpiHexStrVal => {
+                        const chunk_size: u32 = 4;
+                        // let hex_digits = _bits / chunk_size;
+
+                        let chunks: Vec<Vec<u8>> = signal_bit_string.as_bytes().chunks(chunk_size as usize).map(|chunk| chunk.iter().map(|&x| x - b'0').collect::<Vec<u8>>()).collect();
+                        let hex_string: String = chunks
+                            .iter()
+                            .map(|chunk| {
+                                let bin_value = chunk.iter().rev().enumerate().fold(0, |acc, (i, &b)| acc | (b << i));
+                                format!("{:x}", bin_value)
+                            })
+                            .collect();
+
+                        let c_string = CString::new(hex_string).expect("CString::new failed");
+                        let c_str_ptr = c_string.into_raw();
+                        (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
+                        // todo!("vpiHexStrVal signal_bit_string => {} bits => {} hex_digits => {} {}", signal_bit_string, _bits, hex_digits, hex_string);
+                    }
+                    | vpiBinStrVal => {
+                        let c_string = CString::new(signal_bit_string).expect("CString::new failed");
+                        let c_str_ptr = c_string.into_raw();
+                        (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
+                    }
+                    | _ => {
+                        todo!("v_format => {}", v_format)
+                    }
+                };
+            }
+            | SignalValue::FourValue(_data, bits) => {
+                match v_format as u32 {
+                    | vpiVectorVal => {
+                        let vec_len = cover_with_32(bits as usize);
+                        let mut vecvals = Vec::new();
+                        for _i in 0..vec_len {
+                            vecvals.push(t_vpi_vecval {
+                                aval: 0,
                                 bval: 0,
-                            },
-                        );
+                            });
+                        }
+                        let vecvals_box = vecvals.into_boxed_slice();
+                        let vecvals_ptr = vecvals_box.as_ptr() as *mut t_vpi_vecval;
+                        let _ = Box::into_raw(vecvals_box);
+                        (*value_p).value.vector = vecvals_ptr;
                     }
-                    let vecvals_box = vecvals.into_boxed_slice();
-                    let vecvals_ptr = vecvals_box.as_ptr() as *mut t_vpi_vecval;
-                    let _ = Box::into_raw(vecvals_box);
-                    (*value_p).value.vector = vecvals_ptr;
-                }
-                | vpiIntVal => {
-                    let value = words[words.len() - 1] as i32;
-                    (*value_p).value.integer = value;
-                }
-                | vpiHexStrVal => {
-                    const chunk_size: u32 = 4;
-                    // let hex_digits = _bits / chunk_size;
-
-                    let chunks: Vec<Vec<u8>> = signal_bit_string.as_bytes().chunks(chunk_size as usize).map(|chunk| chunk.iter().map(|&x| x - b'0').collect::<Vec<u8>>()).collect();
-                    let hex_string: String = chunks
-                        .iter()
-                        .map(|chunk| {
-                            let bin_value = chunk.iter().rev().enumerate().fold(0, |acc, (i, &b)| acc | (b << i));
-                            format!("{:x}", bin_value)
-                        })
-                        .collect();
-
-                    let c_string = CString::new(hex_string).expect("CString::new failed");
-                    let c_str_ptr = c_string.into_raw();
-                    (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
-                    // todo!("vpiHexStrVal signal_bit_string => {} bits => {} hex_digits => {} {}", signal_bit_string, _bits, hex_digits, hex_string);
-                }
-                | vpiBinStrVal => {
-                    let c_string = CString::new(signal_bit_string).expect("CString::new failed");
-                    let c_str_ptr = c_string.into_raw();
-                    (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
-                }
-                | _ => {
-                    todo!("v_format => {}", v_format)
-                }
-            };
-        }
-        | SignalValue::FourValue(_data, bits) => {
-            match v_format as u32 {
-                | vpiVectorVal => {
-                    let vec_len = cover_with_32(bits as usize);
-                    let mut vecvals = Vec::new();
-                    for _i in 0..vec_len {
-                        vecvals.push(t_vpi_vecval {
-                            aval: 0,
-                            bval: 0,
-                        });
+                    | vpiIntVal => {
+                        (*value_p).value.integer = 0;
                     }
-                    let vecvals_box = vecvals.into_boxed_slice();
-                    let vecvals_ptr = vecvals_box.as_ptr() as *mut t_vpi_vecval;
-                    let _ = Box::into_raw(vecvals_box);
-                    (*value_p).value.vector = vecvals_ptr;
-                }
-                | vpiIntVal => {
-                    (*value_p).value.integer = 0;
-                }
-                | vpiBinStrVal => {
-                    let c_string = CString::new(signal_bit_string).expect("CString::new failed");
-                    let c_str_ptr = c_string.into_raw();
-                    (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
-                }
-                | _ => {
-                    todo!("v_format => {}", v_format)
-                }
-            };
+                    | vpiBinStrVal => {
+                        let c_string = CString::new(signal_bit_string).expect("CString::new failed");
+                        let c_str_ptr = c_string.into_raw();
+                        (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
+                    }
+                    | _ => {
+                        todo!("v_format => {}", v_format)
+                    }
+                };
+            }
+            | _ => panic!("{:#?}", signal_v),
         }
-        | _ => panic!("{:#?}", signal_v),
+    } else {
+        // No value found at time index 0, use default value: 0
+        assert!(time_table_idx == 0);
+        assert!(!loaded_signal.time_indices().is_empty());
+
+        match v_format as u32 {
+            | vpiVectorVal => {
+                let mut vecvals = Vec::new();
+                vecvals.insert(
+                    0,
+                    t_vpi_vecval {
+                        aval: 0,
+                        bval: 0,
+                    },
+                );
+                let vecvals_box = vecvals.into_boxed_slice();
+                let vecvals_ptr = vecvals_box.as_ptr() as *mut t_vpi_vecval;
+                let _ = Box::into_raw(vecvals_box);
+                (*value_p).value.vector = vecvals_ptr;
+            }
+            | vpiIntVal => {
+                (*value_p).value.integer = 0;
+            }
+            | vpiHexStrVal => {
+                let hex_string = String::from("0");
+                let c_string = CString::new(hex_string).expect("CString::new failed");
+                let c_str_ptr = c_string.into_raw();
+                (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
+            }
+            | vpiBinStrVal => {
+                let bin_string = String::from("0");
+                let c_string = CString::new(bin_string).expect("CString::new failed");
+                let c_str_ptr = c_string.into_raw();
+                (*value_p).value.str_ = c_str_ptr as *mut PLI_BYTE8;
+            }
+            | _ => {
+                todo!("v_format => {}", v_format)
+            }
+        }
     }
 
     // println!("[wellen_vpi_get_value] handle is {:?} format is {:?} value is {:?} signal_v is {:?}", handle, v_format, signal_bit_string, signal_v);
@@ -428,17 +470,27 @@ pub unsafe extern "C" fn wellen_vpi_get_value(handle: *mut c_void, time: u64, va
 pub unsafe extern "C" fn wellen_get_value_str(handle: *mut c_void, time_table_idx: u64) -> *mut c_char {
     let handle = unsafe { *{ handle as *mut vpiHandle } };
     let loaded_signal = SIGNAL_CACHE.as_ref().unwrap().get(&(handle as vpiHandle)).unwrap().signal.borrow();
-    let off = loaded_signal.get_offset(time_table_idx as u32).unwrap();
-    let signal_bit_string = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
-    let c_string = CString::new(signal_bit_string).expect("CString::new failed");
-    c_string.into_raw()
+    let off = loaded_signal.get_offset(time_table_idx as u32);
+
+    if let Some(off) = off {
+        let signal_bit_string = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
+        let c_string = CString::new(signal_bit_string).expect("CString::new failed");
+        c_string.into_raw()
+    } else {
+        // No value found at time index 0, use default value: 0
+        assert!(time_table_idx == 0);
+
+        let c_string = CString::new("0").expect("CString::new failed");
+        c_string.into_raw()
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn wellen_vpi_get(property: PLI_INT32, handle: *mut c_void) -> PLI_INT32 {
     let handle = unsafe { *{ handle as *mut vpiHandle } };
     let loaded_signal = SIGNAL_CACHE.as_ref().unwrap().get(&(handle as vpiHandle)).unwrap().signal.borrow();
-    let off = loaded_signal.get_offset(0).unwrap();
+    let first_indx = loaded_signal.get_first_time_idx().unwrap();
+    let off = loaded_signal.get_offset(first_indx).expect(format!("failed to get offset, signal => {:?}", loaded_signal).as_str());
     let signal_v = loaded_signal.get_value_at(&off, 0);
 
     match property as u32 {
