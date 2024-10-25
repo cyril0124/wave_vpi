@@ -47,27 +47,27 @@ void endOfSimulation() {
 }
 
 void sigint_handler(int unused) {
-    endOfSimulation();
-    
     VL_WARN(R"(
 ---------------------------------------------------------------------
 ----   wave_vpi_main get <SIGINT>, the program will terminate...      ----
 ---------------------------------------------------------------------
 )");
 
+    endOfSimulation();
+
     exit(0);
 }
 
 void sigabrt_handler(int unused) {
-    endOfSimulation();
-    
     VL_WARN(R"(
 ---------------------------------------------------------------------
 ----   wave_vpi_main get <SIGABRT>, the program will terminate...      ----
 ---------------------------------------------------------------------
 )");
 
-    exit(0);
+    endOfSimulation();
+
+    exit(1);
 }
 
 
@@ -251,8 +251,13 @@ PLI_INT32 vpi_control(PLI_INT32 operation, ...) {
     switch (operation) {
         case vpiStop:
         case vpiFinish:
+            if(operation == vpiStop) {
+                VL_INFO("get vpiStop\n");
+            } else {
+                VL_INFO("get vpiFinish\n");
+            }
             endOfSimulation();
-            exit(0);
+            // exit(0);
             break;
         default:
             ASSERT(false, "Unsupported operation", operation);

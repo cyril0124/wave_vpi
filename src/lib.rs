@@ -327,7 +327,7 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
 
     if let Some(off) = off {
         let _wave_time = TIME_TABLE.as_ref().unwrap()[time_table_idx as usize];
-        let signal_bit_string = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
+        let mut signal_bit_string = loaded_signal.get_value_at(&off, 0).to_bit_string().unwrap();
         let signal_v = loaded_signal.get_value_at(&off, 0);
 
         // TODO: performance
@@ -359,7 +359,17 @@ pub unsafe extern "C" fn wellen_vpi_get_value_from_index(handle: *mut c_void, ti
                     }
                     | vpiHexStrVal => {
                         const chunk_size: u32 = 4;
-                        // let hex_digits = _bits / chunk_size;
+
+                        // Check if the length of `signal_bit_string` is not a multiple of 4
+                        if signal_bit_string.len() % 4 != 0 {
+                            let padding_length = 4 - (signal_bit_string.len() % 4);
+
+                            // Create a string of `'0'` characters with a length equal to `padding_length`
+                            let padding: String = std::iter::repeat('0').take(padding_length).collect();
+
+                            // Insert the padding at the beginning of the `signal_bit_string`
+                            signal_bit_string.insert_str(0, &padding);
+                        }
 
                         let chunks: Vec<Vec<u8>> = signal_bit_string.as_bytes().chunks(chunk_size as usize).map(|chunk| chunk.iter().map(|&x| x - b'0').collect::<Vec<u8>>()).collect();
                         let hex_string: String = chunks
