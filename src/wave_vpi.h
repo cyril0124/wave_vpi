@@ -7,14 +7,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <csignal>
 #include <iostream>
 #include <memory>
 #include <queue>
+#include <vector>
 #include <unordered_map>
+#include <string>
 #include <sys/types.h>
 #include <utility>
+#include <algorithm>
 
 #ifdef USE_FSDB
 #warning "[wave_vpi] USE_FSDB is defined!"
@@ -120,12 +124,6 @@ using vpiCbFunc = PLI_INT32 (*)(struct t_cb_data *);
 #define TIME_TABLE_MAX_INDEX_VAR_CODE 10
 #define Xtag64ToUInt64(xtag64) (uint64_t)(((uint64_t)xtag64.H << 32) + xtag64.L)
 
-// Used by <ffrReadScopeVarTree2>
-typedef struct {
-    int desiredDepth;
-    std::string_view fullName;
-} ClientUserData;
-
 class FsdbWaveVpi {
   public:
     std::string waveFileName;
@@ -139,6 +137,8 @@ class FsdbWaveVpi {
     std::set<uint64_t> xtagU64Set;
     std::vector<uint64_t> xtagU64Vec;
     std::vector<fsdbXTag> xtagVec;
+
+    std::unordered_map<std::string, fsdbVarIdcode> varIdCodeCache; // TODO: store into json file at the end of simulation and read back at the start of simulation
 
     FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName);
     ~FsdbWaveVpi() {};

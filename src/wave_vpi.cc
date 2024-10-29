@@ -1,16 +1,77 @@
 #include "wave_vpi.h"
-#include "fmt/core.h"
-#include "vpi_user.h"
-#include <cstddef>
-#include <cstdlib>
-#include <memory>
-#include <string>
-#include <unordered_map>
-#include <utility>
-#include <vector>
 
 #ifdef USE_FSDB
 std::unique_ptr<FsdbWaveVpi> fsdbWaveVpi;
+
+// Used by <ffrReadScopeVarTree2>
+typedef struct {
+    int desiredDepth;
+    std::string_view fullName;
+    fsdbVarIdcode retVarIdCode;
+} FsdbTreeCbContext;
+
+uint32_t currentDepth = 0;
+char currentScope[MAX_SCOPE_DEPTH][256];
+
+static bool_T fsdbTreeCb(fsdbTreeCBType cbType, void *cbClientData, void *cbData) {
+    switch (cbType) {
+        case FSDB_TREE_CBT_SCOPE: {
+            fsdbTreeCBDataScope *scope_data = (fsdbTreeCBDataScope *)cbData;
+            if (currentDepth < MAX_SCOPE_DEPTH - 1) {
+                strcpy(currentScope[currentDepth], scope_data->name);
+                currentDepth++;
+            }
+            break;
+        }
+        case FSDB_TREE_CBT_VAR: {
+            auto contextData = (FsdbTreeCbContext *)cbClientData;
+            if (contextData->desiredDepth != currentDepth) {
+                return FALSE;
+            }
+            fsdbTreeCBDataVar *var_data = (fsdbTreeCBDataVar *)cbData;
+
+            char fullName[256] = "";
+            for (int i = 0; i < currentDepth; ++i) {
+                strcat(fullName, currentScope[i]);
+                strcat(fullName, ".");
+            }
+
+            std::string varDataName = var_data->name;
+            std::size_t start, end;
+            while ((start = varDataName.find('[')) != std::string::npos && (end = varDataName.find(']')) != std::string::npos) {
+                if (end > start) {
+                    varDataName.erase(start, end - start + 1);
+                }
+            }
+            strcat(fullName, varDataName.c_str());
+
+            if (std::string_view(fullName) == contextData->fullName) {
+                // printf("Full Name: %s varDataName: %s VarIdx:%u depth:%d desiredDepth:%d\n", fullName, varDataName.c_str(), var_data->u.idcode, currentDepth, contextData->desiredDepth);
+                contextData->retVarIdCode = var_data->u.idcode;
+                fsdbWaveVpi->varIdCodeCache[std::string(contextData->fullName)] = var_data->u.idcode;
+                return FALSE; // return FALSE to stop the traverse
+            } else {
+                std::string insertKeyStr = std::string(fullName);
+                std::size_t start, end;
+                while ((start = insertKeyStr.find('[')) != std::string::npos && (end = insertKeyStr.find(']')) != std::string::npos) {
+                    if (end > start) {
+                        insertKeyStr.erase(start, end - start + 1);
+                    }
+                }
+                // The varIdCodeCache will store the varIdCode of the same scope depth into it even it is not required by the user.
+                fsdbWaveVpi->varIdCodeCache[insertKeyStr] = var_data->u.idcode;
+            }
+            break;
+        }
+        case FSDB_TREE_CBT_UPSCOPE: {
+            currentDepth--;
+            break;
+        }
+        default:
+            return TRUE; // return TRUE to continue the traverse
+    }
+    return TRUE; // return TRUE to continue the traverse
+}
 
 FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fsdbObj(fsdbObj), waveFileName(waveFileName) {
     char fsdbName[FSDB_MAX_PATH + 1] = {0};
@@ -77,11 +138,6 @@ FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fs
 }
 
 fsdbVarIdcode FsdbWaveVpi::getVarIdCodeByName(char *name) {
-    static uint32_t currentDepth;
-    static char currentScope[MAX_SCOPE_DEPTH][256];
-    static fsdbVarIdcode retVarIdCode;
-    static std::unordered_map<std::string, fsdbVarIdcode> varIdCodeCache; // TODO: store into json file at the end of simulation and read back at the start of simulation
-
     auto it = varIdCodeCache.find(std::string(name));
     if (it != varIdCodeCache.end()) {
         // fmt::println("found in varIdCodeCache! {}", name);
@@ -95,76 +151,13 @@ fsdbVarIdcode FsdbWaveVpi::getVarIdCodeByName(char *name) {
         std::memset(currentScope[i], 0, sizeof(currentScope[i]));
     }
 
-    retVarIdCode = 0;
-
     std::string fullName      = std::string(name);
-    ClientUserData clientData = {.desiredDepth = std::count(fullName.begin(), fullName.end(), '.'), .fullName = fullName};
+    FsdbTreeCbContext contextData = {.desiredDepth = static_cast<int>(std::count(fullName.begin(), fullName.end(), '.')), .fullName = fullName, .retVarIdCode = 0};
+    fsdbObj->ffrReadScopeVarTree2(fsdbTreeCb, (void *)&contextData);
 
-    fsdbObj->ffrReadScopeVarTree2(
-        [&currentDepth, &currentScope, &retVarIdCode, &varIdCodeCache](fsdbTreeCBType cbType, void *cbClientData, void *cbData) -> bool_T {
-            switch (cbType) {
-            case FSDB_TREE_CBT_SCOPE: {
-                fsdbTreeCBDataScope *scope_data = (fsdbTreeCBDataScope *)cbData;
-                if (currentDepth < MAX_SCOPE_DEPTH - 1) {
-                    strcpy(currentScope[currentDepth], scope_data->name);
-                    currentDepth++;
-                }
-                break;
-            }
-            case FSDB_TREE_CBT_VAR: {
-                auto clientData = (ClientUserData *)cbClientData;
-                if (clientData->desiredDepth != currentDepth) {
-                    return FALSE;
-                }
-                fsdbTreeCBDataVar *var_data = (fsdbTreeCBDataVar *)cbData;
+    ASSERT(contextData.retVarIdCode != 0, "Failed to find varIdCode", name);
 
-                char fullName[256] = "";
-                for (int i = 0; i < currentDepth; ++i) {
-                    strcat(fullName, currentScope[i]);
-                    strcat(fullName, ".");
-                }
-
-                std::string varDataName = var_data->name;
-                std::size_t start, end;
-                while ((start = varDataName.find('[')) != std::string::npos && (end = varDataName.find(']')) != std::string::npos) {
-                    if (end > start) {
-                        varDataName.erase(start, end - start + 1);
-                    }
-                }
-                strcat(fullName, varDataName.c_str());
-
-                if (std::string_view(fullName) == clientData->fullName) {
-                    // printf("Full Name: %s varDataName: %s VarIdx:%u depth:%d desiredDepth:%d\n", fullName, varDataName.c_str(), var_data->u.idcode, currentDepth, clientData->desiredDepth);
-                    retVarIdCode                                      = var_data->u.idcode;
-                    varIdCodeCache[std::string(clientData->fullName)] = var_data->u.idcode;
-                    return FALSE; // return FALSE to stop the traverse
-                } else {
-                    std::string insertKeyStr = std::string(fullName);
-                    std::size_t start, end;
-                    while ((start = insertKeyStr.find('[')) != std::string::npos && (end = insertKeyStr.find(']')) != std::string::npos) {
-                        if (end > start) {
-                            insertKeyStr.erase(start, end - start + 1);
-                        }
-                    }
-                    // The varIdCodeCache will store the varIdCode of the same scope depth into it even it is not required by the user.
-                    varIdCodeCache[insertKeyStr] = var_data->u.idcode;
-                }
-                break;
-            }
-            case FSDB_TREE_CBT_UPSCOPE: {
-                currentDepth--;
-                break;
-            }
-            default:
-                return TRUE; // return TRUE to continue the traverse
-            }
-            return TRUE; // return TRUE to continue the traverse
-        },
-        (void *)&clientData);
-
-    ASSERT(retVarIdCode != 0, "Failed to find varIdCode", name);
-
-    return retVarIdCode;
+    return contextData.retVarIdCode;
 }
 
 uint32_t FsdbWaveVpi::findNearestTimeIndex(uint64_t time) {
