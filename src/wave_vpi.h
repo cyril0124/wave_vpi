@@ -16,6 +16,23 @@
 #include <sys/types.h>
 #include <utility>
 
+#ifdef USE_FSDB
+#warning "[wave_vpi] USE_FSDB is defined!"
+
+#include "ffrAPI.h"
+#include "fsdbShr.h"
+#include <set>
+
+#ifndef FALSE
+#define FALSE 0
+#endif
+
+#ifndef TRUE
+#define TRUE 1
+#endif
+
+#endif
+
 #define ANSI_COLOR_RED     "\x1b[31m"
 #define ANSI_COLOR_GREEN   "\x1b[32m"
 #define ANSI_COLOR_YELLOW  "\x1b[33m"
@@ -51,6 +68,7 @@
 using CursorTime_t = uint64_t;
 using TaskId_t = uint64_t;
 
+#ifndef USE_FSDB
 extern "C" {
     void wellen_wave_init(const char *filename);
     void wellen_test(const char *filename);
@@ -72,7 +90,7 @@ extern "C" {
 
     void wellen_vpi_finalize();
 }
-
+#endif
 
 struct WaveCursor {
     CursorTime_t time;
@@ -81,6 +99,7 @@ struct WaveCursor {
     uint64_t index;
     uint64_t maxIndex;
 
+#ifndef USE_FSDB
     void updateTime(uint64_t time) {
         this->time = time;
         this->index = wellen_get_index_from_time(time);
@@ -90,18 +109,59 @@ struct WaveCursor {
         this->index = index;
         this->time = wellen_get_time_from_index(index);
     }
+#endif
 };
 
 using vpiHandleRaw = PLI_UINT32;
 using vpiCbFunc = PLI_INT32 (*)(struct t_cb_data *);
 
+#ifdef USE_FSDB
+#define MAX_SCOPE_DEPTH 100
+#define TIME_TABLE_MAX_INDEX_VAR_CODE 10
+#define Xtag64ToUInt64(xtag64) (uint64_t)(((uint64_t)xtag64.H << 32) + xtag64.L)
+
+// Used by <ffrReadScopeVarTree2>
+typedef struct {
+    int desiredDepth;
+    std::string_view fullName;
+} ClientUserData;
+
+class FsdbWaveVpi {
+  public:
+    std::string waveFileName;
+    ffrObject *fsdbObj;
+    ffrFSDBInfo fsdbInfo;
+    fsdbVarIdcode maxVarIdcode;
+    fsdbVarIdcode sigArr[TIME_TABLE_MAX_INDEX_VAR_CODE];
+    ffrTimeBasedVCTrvsHdl tbVcTrvsHdl;
+
+    uint32_t sigNum = TIME_TABLE_MAX_INDEX_VAR_CODE;
+    std::set<uint64_t> xtagU64Set;
+    std::vector<uint64_t> xtagU64Vec;
+    std::vector<fsdbXTag> xtagVec;
+
+    FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName);
+    ~FsdbWaveVpi() {};
+    fsdbVarIdcode getVarIdCodeByName(char *name);
+    uint32_t findNearestTimeIndex(uint64_t time);
+};
+#endif
+
 struct ValueCbInfo {
     std::shared_ptr<s_cb_data> cbData;
+#ifdef USE_FSDB
+    vpiHandle handle;
+#else
     vpiHandleRaw handle;
+#endif
     std::string valueStr;
 };
 
+#ifdef USE_FSDB
+std::string fsdbGetBinStr(vpiHandle object);
+#else
 std::string _wellen_get_value_str(vpiHandle object);
+#endif
 
 void wave_vpi_init(const char *filename);
 void wave_vpi_main();
