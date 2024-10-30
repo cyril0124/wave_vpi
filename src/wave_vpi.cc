@@ -16,9 +16,9 @@ char currentScope[MAX_SCOPE_DEPTH][256];
 static bool_T fsdbTreeCb(fsdbTreeCBType cbType, void *cbClientData, void *cbData) {
     switch (cbType) {
         case FSDB_TREE_CBT_SCOPE: {
-            fsdbTreeCBDataScope *scope_data = (fsdbTreeCBDataScope *)cbData;
+            fsdbTreeCBDataScope *scopeData = (fsdbTreeCBDataScope *)cbData;
             if (currentDepth < MAX_SCOPE_DEPTH - 1) {
-                strcpy(currentScope[currentDepth], scope_data->name);
+                strcpy(currentScope[currentDepth], scopeData->name);
                 currentDepth++;
             }
             break;
@@ -28,7 +28,7 @@ static bool_T fsdbTreeCb(fsdbTreeCBType cbType, void *cbClientData, void *cbData
             if (contextData->desiredDepth != currentDepth) {
                 return FALSE;
             }
-            fsdbTreeCBDataVar *var_data = (fsdbTreeCBDataVar *)cbData;
+            fsdbTreeCBDataVar *varData = (fsdbTreeCBDataVar *)cbData;
 
             char fullName[256] = "";
             for (int i = 0; i < currentDepth; ++i) {
@@ -36,7 +36,7 @@ static bool_T fsdbTreeCb(fsdbTreeCBType cbType, void *cbClientData, void *cbData
                 strcat(fullName, ".");
             }
 
-            std::string varDataName = var_data->name;
+            std::string varDataName = varData->name;
             std::size_t start, end;
             while ((start = varDataName.find('[')) != std::string::npos && (end = varDataName.find(']')) != std::string::npos) {
                 if (end > start) {
@@ -46,9 +46,9 @@ static bool_T fsdbTreeCb(fsdbTreeCBType cbType, void *cbClientData, void *cbData
             strcat(fullName, varDataName.c_str());
 
             if (std::string_view(fullName) == contextData->fullName) {
-                // printf("Full Name: %s varDataName: %s VarIdx:%u depth:%d desiredDepth:%d\n", fullName, varDataName.c_str(), var_data->u.idcode, currentDepth, contextData->desiredDepth);
-                contextData->retVarIdCode = var_data->u.idcode;
-                fsdbWaveVpi->varIdCodeCache[std::string(contextData->fullName)] = var_data->u.idcode;
+                // fmt::println("Full Name: {} varDataName: {} varIdx: {} depth: {} desiredDepth: {}", fullName, varDataName, varData->u.idcode, currentDepth, contextData->desiredDepth);
+                contextData->retVarIdCode = varData->u.idcode;
+                fsdbWaveVpi->varIdCodeCache[std::string(contextData->fullName)] = varData->u.idcode;
                 return FALSE; // return FALSE to stop the traverse
             } else {
                 std::string insertKeyStr = std::string(fullName);
@@ -59,7 +59,7 @@ static bool_T fsdbTreeCb(fsdbTreeCBType cbType, void *cbClientData, void *cbData
                     }
                 }
                 // The varIdCodeCache will store the varIdCode of the same scope depth into it even it is not required by the user.
-                fsdbWaveVpi->varIdCodeCache[insertKeyStr] = var_data->u.idcode;
+                fsdbWaveVpi->varIdCodeCache[insertKeyStr] = varData->u.idcode;
             }
             break;
         }
@@ -115,15 +115,19 @@ FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fs
             PANIC("Failed to create time based vc trvs hdl! please re-execute the program.", sigNum, sigArr, this->waveFileName);
         }
 
+        fmt::println("[wave_vpi] FsdbWaveVpi start collecting xtagU64Set");
+        fflush(stdout);
+
         int i = 0;
         fsdbXTag xtag;
         while (FSDB_RC_SUCCESS == tbVcTrvsHdl->ffrGotoNextVC()) {
             tbVcTrvsHdl->ffrGetXTag((void *)&xtag);
-            i++;
-            if (xtagU64Set.find(Xtag64ToUInt64(xtag.hltag)) == xtagU64Set.end()) {
-                xtagU64Set.insert(Xtag64ToUInt64(xtag.hltag));
+            auto u64Xtag = Xtag64ToUInt64(xtag.hltag);
+            if (xtagU64Set.find(u64Xtag) == xtagU64Set.end()) {
+                xtagU64Set.insert(u64Xtag);
                 xtagVec.emplace_back(xtag);
             }
+            i++;
         }
         fmt::println("[wave_vpi] FsdbWaveVpi xtagU64Set size: {}, total size: {}", xtagU64Set.size(), i);
         fflush(stdout);
@@ -195,14 +199,14 @@ std::vector<std::pair<uint64_t, std::shared_ptr<t_cb_data>>> willAppendTimeCbQue
 std::vector<std::shared_ptr<t_cb_data>> nextSimTimeQueue;
 std::vector<std::shared_ptr<t_cb_data>> willAppendNextSimTimeQueue;
 
-std::unordered_map<vpiHandleRaw, ValueCbInfo> valueCbMap;
+UNORDERED_MAP<vpiHandleRaw, ValueCbInfo> valueCbMap;
 std::vector<std::pair<vpiHandleRaw, ValueCbInfo>> willAppendValueCb;
 std::vector<vpiHandleRaw> willRemoveValueCb;
 
 // The vpiHandleAllocator is a counter that counts the number of vpiHandles allocated which make it easy to provide unique vpiHandle values.
 vpiHandleRaw vpiHandleAllcator = 0;
 
-// std::unordered_map<vpiHandle, std::string> hdlToNameMap; // For debug purpose
+// UNORDERED_MAP<vpiHandle, std::string> hdlToNameMap; // For debug purpose
 
 extern "C" void vlog_startup_routines_bootstrap();
 
@@ -210,7 +214,7 @@ void wave_vpi_init(const char *filename) {
 #ifdef USE_FSDB
     fsdbWaveVpi = std::make_unique<FsdbWaveVpi>(ffrObject::ffrOpen3((char *)filename), std::string(filename));
     
-    cursor.maxIndex = fsdbWaveVpi->xtagU64Vec.size();
+    cursor.maxIndex = fsdbWaveVpi->xtagU64Vec.size() - 1;
     cursor.maxTime  = fsdbWaveVpi->xtagU64Vec.at(fsdbWaveVpi->xtagU64Vec.size() - 1);
 #else
     wellen_wave_init(filename);
@@ -376,7 +380,11 @@ void wave_vpi_main() {
         cursor.index++; // Next simulation step
     }
     
-    fmt::println("[wave_vpi] FINISH! cursor.index => {} cursor.maxIndex => {}", cursor.index, cursor.maxIndex);
+#ifdef USE_FSDB
+    fmt::println("[wave_vpi] FINISH! cursor.index => {} cursor.time => {}", cursor.index, fsdbWaveVpi->xtagU64Vec[cursor.index]);
+#else
+    fmt::println("[wave_vpi] FINISH! cursor.index => {} cursor.time => {}", cursor.index, wellen_get_time_from_index(cursor.index));
+#endif
     
     // End of simulation
     endOfSimulation();
@@ -430,7 +438,9 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
     auto time = fsdbWaveVpi->xtagVec[cursor.index];
     time.hltag.L = time.hltag.L + 1; // Move a little bit further to ensure we are not in the sensitive clock edge which may lead to signal value confusion.
     if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) {
-        PANIC("vcTrvsHdl->ffrGotoXTag() failed!", fsdbWaveVpi->xtagVec[cursor.index].hltag.L, fsdbWaveVpi->xtagVec[cursor.index].hltag.H, fsdbWaveVpi->xtagU64Vec[cursor.index], cursor.index);
+        auto currIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.index];
+        auto maxIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.maxIndex];
+        PANIC("vcTrvsHdl->ffrGotoXTag() failed!", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
     }
     if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGetVC(&retVC)) {
         PANIC("vcTrvsHdl->ffrGetVC() failed!");

@@ -14,11 +14,22 @@
 #include <memory>
 #include <queue>
 #include <vector>
-#include <unordered_map>
 #include <string>
 #include <sys/types.h>
 #include <utility>
 #include <algorithm>
+
+#ifdef VL_DEF_OPT_USE_BOOST_UNORDERED
+#warning "[wave_vpi] VL_DEF_OPT_USE_BOOST_UNORDERED is defined!"
+
+#include "boost_unordered.hpp"
+#define UNORDERED_SET boost::unordered_flat_set
+#define UNORDERED_MAP boost::unordered_flat_map
+#else
+#include <unordered_map>
+#define UNORDERED_SET std::unordered_set
+#define UNORDERED_MAP std::unordered_map
+#endif
 
 #ifdef USE_FSDB
 #warning "[wave_vpi] USE_FSDB is defined!"
@@ -134,11 +145,11 @@ class FsdbWaveVpi {
     ffrTimeBasedVCTrvsHdl tbVcTrvsHdl;
 
     uint32_t sigNum = TIME_TABLE_MAX_INDEX_VAR_CODE;
-    std::set<uint64_t> xtagU64Set;
+    UNORDERED_SET<uint64_t> xtagU64Set;
     std::vector<uint64_t> xtagU64Vec;
     std::vector<fsdbXTag> xtagVec;
 
-    std::unordered_map<std::string, fsdbVarIdcode> varIdCodeCache; // TODO: store into json file at the end of simulation and read back at the start of simulation
+    UNORDERED_MAP<std::string, fsdbVarIdcode> varIdCodeCache; // TODO: store into json file at the end of simulation and read back at the start of simulation
 
     FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName);
     ~FsdbWaveVpi() {};
