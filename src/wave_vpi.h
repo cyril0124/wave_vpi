@@ -18,6 +18,13 @@
 #include <sys/types.h>
 #include <utility>
 #include <algorithm>
+#include <fstream>
+#include <filesystem>
+#include <chrono>
+#include "sys/stat.h"
+
+#define LAST_MODIFIED_TIME_FILE "last_modified_time.wave_vpi_fsdb"
+#define TIME_TABLE_FILE "time_table.wave_vpi_fsdb"
 
 #ifdef VL_DEF_OPT_USE_BOOST_UNORDERED
 #warning "[wave_vpi] VL_DEF_OPT_USE_BOOST_UNORDERED is defined!"
@@ -145,7 +152,6 @@ class FsdbWaveVpi {
     ffrTimeBasedVCTrvsHdl tbVcTrvsHdl;
 
     uint32_t sigNum = TIME_TABLE_MAX_INDEX_VAR_CODE;
-    UNORDERED_SET<uint64_t> xtagU64Set;
     std::vector<uint64_t> xtagU64Vec;
     std::vector<fsdbXTag> xtagVec;
 

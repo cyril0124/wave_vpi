@@ -115,27 +115,103 @@ FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fs
             PANIC("Failed to create time based vc trvs hdl! please re-execute the program.", sigNum, sigArr, this->waveFileName);
         }
 
-        fmt::println("[wave_vpi] FsdbWaveVpi start collecting xtagU64Set");
-        fflush(stdout);
+        bool useCachedData = false;
+        std::ifstream lastModifiedTimeFile(LAST_MODIFIED_TIME_FILE);
+        auto waveFileSize = std::filesystem::file_size(waveFileName);
+        auto lastWriteTime = (uint64_t)std::filesystem::last_write_time(waveFileName).time_since_epoch().count();
 
-        int i = 0;
-        fsdbXTag xtag;
-        while (FSDB_RC_SUCCESS == tbVcTrvsHdl->ffrGotoNextVC()) {
-            tbVcTrvsHdl->ffrGetXTag((void *)&xtag);
-            auto u64Xtag = Xtag64ToUInt64(xtag.hltag);
-            if (xtagU64Set.find(u64Xtag) == xtagU64Set.end()) {
-                xtagU64Set.insert(u64Xtag);
-                xtagVec.emplace_back(xtag);
+        auto updateLastModifiedTimeFile = [&waveFileSize, &lastWriteTime]() {
+            std::ofstream _lastModifiedTimeFile(LAST_MODIFIED_TIME_FILE);
+            _lastModifiedTimeFile << waveFileSize << std::endl;
+            _lastModifiedTimeFile << lastWriteTime << std::endl;
+            _lastModifiedTimeFile.close();
+        };
+
+        if(lastModifiedTimeFile.is_open()) {
+            std::string waveFileSizeStr;
+            std::string lastModifiedTimeStr;
+            std::string isFinish;
+
+            try {
+                std::getline(lastModifiedTimeFile, waveFileSizeStr);
+                std::getline(lastModifiedTimeFile, lastModifiedTimeStr);
+                std::getline(lastModifiedTimeFile, isFinish);
+                lastModifiedTimeFile.close();
+                
+                auto _waveFileSize = std::stoull(waveFileSizeStr);
+                auto _lastModifiedTime = std::stoull(lastModifiedTimeStr);
+                
+                if(_waveFileSize == waveFileSize && _lastModifiedTime == lastWriteTime) {
+                    useCachedData = true;
+                } else {
+                    updateLastModifiedTimeFile();
+                }
+            } catch(std::invalid_argument &e) {
+                fmt::println("[wave_vpi] FsdbWaveVpi ERROR while reading:{}! => std::invalid_argument", LAST_MODIFIED_TIME_FILE);
+                updateLastModifiedTimeFile();
             }
-            i++;
+        } else {
+            updateLastModifiedTimeFile();
         }
-        fmt::println("[wave_vpi] FsdbWaveVpi xtagU64Set size: {}, total size: {}", xtagU64Set.size(), i);
-        fflush(stdout);
 
-        // create xtagU64Vec besed on xtagU64Set
-        xtagU64Vec.assign(xtagU64Set.begin(), xtagU64Set.end());
+        fmt::println("[wave_vpi] FsdbWaveVpi useCachedData: {}", useCachedData);
 
-        // recreate tbVcTrvsHdl to reset the xtag to start point
+        if(useCachedData) {
+            std::ifstream timeTableFile(TIME_TABLE_FILE);
+            if(timeTableFile.is_open()) {
+                std::size_t vecSize;
+
+                timeTableFile.read(reinterpret_cast<char *>(&vecSize), sizeof(vecSize)); // The first elements is vector size
+                xtagU64Vec.resize(vecSize);
+                
+                timeTableFile.read(reinterpret_cast<char *>(xtagU64Vec.data()), vecSize * sizeof(uint64_t));
+                timeTableFile.close();
+
+                xtagVec.resize(vecSize);
+                for(size_t i = 0; i < vecSize; i++) {
+                    xtagVec[i].hltag.H = xtagU64Vec[i] >> 32;
+                    xtagVec[i].hltag.L = xtagU64Vec[i] & 0x0000FFFF;
+                }
+
+                fmt::println("[wave_vpi] FsdbWaveVpi read from timeTableFile => xtagU64Vec size: {}", xtagU64Vec.size());
+            } else {
+                fmt::println("[wave_vpi] FsdbWaveVpi failed to open {}, doing normal parse...", TIME_TABLE_FILE);
+                goto NormalParse;
+            }
+        } else {
+NormalParse:
+            fmt::println("[wave_vpi] FsdbWaveVpi start collecting xtagU64Set");
+            fflush(stdout);
+
+            int i = 0;
+            fsdbXTag xtag;
+            UNORDERED_SET<uint64_t> xtagU64Set;
+            while (FSDB_RC_SUCCESS == tbVcTrvsHdl->ffrGotoNextVC()) {
+                tbVcTrvsHdl->ffrGetXTag((void *)&xtag);
+                auto u64Xtag = Xtag64ToUInt64(xtag.hltag);
+                if (xtagU64Set.find(u64Xtag) == xtagU64Set.end()) {
+                    xtagU64Set.insert(u64Xtag);
+                    xtagVec.emplace_back(xtag);
+                }
+                i++;
+            }
+            fmt::println("[wave_vpi] FsdbWaveVpi xtagU64Set size: {}, total size: {}", xtagU64Set.size(), i);
+            fflush(stdout);
+
+            // Create xtagU64Vec besed on xtagU64Set
+            xtagU64Vec.assign(xtagU64Set.begin(), xtagU64Set.end());
+
+            // Save time table into file so that we do not require much time to parse time table.
+            std::ofstream timeTableFile(TIME_TABLE_FILE, std::ios::binary);
+            std::size_t vecSize = xtagU64Vec.size();
+            ASSERT(timeTableFile.is_open(), "Failed to open TIME_TABLE_FILE!", TIME_TABLE_FILE);
+            timeTableFile.write(reinterpret_cast<const char*>(&vecSize), sizeof(vecSize));
+            timeTableFile.write(reinterpret_cast<const char*>(xtagU64Vec.data()), vecSize * sizeof(uint64_t));
+            ASSERT(timeTableFile, "Failed to write to file", TIME_TABLE_FILE);
+            timeTableFile.close();
+        }
+
+        // Recreate tbVcTrvsHdl to reset the xtag to start point
         tbVcTrvsHdl->ffrFree();
         tbVcTrvsHdl = fsdbObj->ffrCreateTimeBasedVCTrvsHdl(sigNum, sigArr);
     }
