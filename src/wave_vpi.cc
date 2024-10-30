@@ -507,8 +507,8 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
                 }
                 tmpIdx++;
                 if (tmpIdx == 32) {
-                    vpiValueVecs[chunkSize - 1 - bufferIdx].aval = tmpVal;
-                    vpiValueVecs[chunkSize - 1 - bufferIdx].bval = 0;
+                    vpiValueVecs[bufferIdx].aval = tmpVal;
+                    vpiValueVecs[bufferIdx].bval = 0;
                     tmpVal                                       = 0;
                     tmpIdx                                       = 0;
                     bufferIdx++;
@@ -516,8 +516,8 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
             }
 
             if (tmpIdx != 0) {
-                vpiValueVecs[chunkSize - 1 - bufferIdx].aval = tmpVal;
-                vpiValueVecs[chunkSize - 1 - bufferIdx].bval = 0;
+                vpiValueVecs[bufferIdx].aval = tmpVal;
+                vpiValueVecs[bufferIdx].bval = 0;
             }
             break;
         }
