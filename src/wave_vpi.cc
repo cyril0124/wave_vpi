@@ -417,28 +417,55 @@ void wave_vpi_main() {
 
         // Deal with cbValueChange callbacks
         for(auto &cb : valueCbMap) {
-            if (cb.second.cbData->cb_rtn != nullptr) {
+            if (cb.second.cbData->cb_rtn != nullptr) [[likely]] {
                 ASSERT(cb.second.cbData->obj != nullptr);
                 ASSERT(cb.second.cbData->cb_rtn != nullptr);
 
+                auto misMatch = false;
 #ifdef USE_FSDB
-                auto newValueStr = fsdbGetBinStr(cb.second.handle);
+                uint32_t newBitValue = 0;
+                std::string newValueStr;
+                if(cb.second.bitSize == 1) [[likely]] {
+                    newBitValue = fsdbGetSingleBitValue(cb.second.handle);
+                    if(newBitValue != cb.second.bitValue) {
+                        misMatch = true;
+                        cb.second.bitValue = newBitValue;
+                    }
+                } else [[unlikely]] { 
+                    newValueStr = fsdbGetBinStr(cb.second.handle);
+                    if(newValueStr != cb.second.valueStr) {
+                        misMatch = true;
+                        cb.second.valueStr = newValueStr;
+                    }
+                }
 #else
                 auto newValueStr = _wellen_get_value_str(&cb.second.handle);
+                if(newValueStr != cb.second.valueStr) {
+                    misMatch = true;
+                    cb.second.valueStr = newValueStr;
+                }
 #endif
                 // All the value change comparision is done by comparing the string of the value, which provides a more robust way to compare the value.
-                if(newValueStr != cb.second.valueStr) {                    
+                if(misMatch) {                
                     // For now, the value change callback is only supported in vpiIntVal format.
                     switch (cb.second.cbData->value->format) {
-                        case vpiIntVal:
+                        [[likely]] case vpiIntVal: {
+#ifdef USE_FSDB
+                            if(cb.second.bitSize == 1) [[likely]] {
+                                cb.second.cbData->value->value.integer = newBitValue;
+                            } else [[unlikely]] {
+                                cb.second.cbData->value->value.integer = std::stoi(newValueStr); // TODO: it seems incorrect?
+                            }
+#else
                             cb.second.cbData->value->value.integer = std::stoi(newValueStr); // TODO: it seems incorrect?
+#endif
                             break;
+                        }
                         default:
                             ASSERT(false, cb.second.cbData->value->format);
                             break;
                     }
                     cb.second.cbData->cb_rtn(cb.second.cbData.get());
-                    cb.second.valueStr = newValueStr;
                 }
             }
         }
@@ -513,12 +540,12 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
 
     auto time = fsdbWaveVpi->xtagVec[cursor.index];
     time.hltag.L = time.hltag.L + 1; // Move a little bit further to ensure we are not in the sensitive clock edge which may lead to signal value confusion.
-    if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) {
+    if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) [[unlikely]] {
         auto currIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.index];
         auto maxIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.maxIndex];
         PANIC("vcTrvsHdl->ffrGotoXTag() failed!", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
     }
-    if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGetVC(&retVC)) {
+    if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGetVC(&retVC)) [[unlikely]] {
         PANIC("vcTrvsHdl->ffrGetVC() failed!");
     }
 
@@ -528,7 +555,7 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
     case vpiIntVal: {
         value_p->value.integer = 0;
         switch (bpb) {
-        case FSDB_BYTES_PER_BIT_1B: {
+        [[likely]] case FSDB_BYTES_PER_BIT_1B: {
             int bitSize = vcTrvsHdl->ffrGetBitSize();
             for (int i = 0; i < bitSize; i++) {
                 switch (retVC[i]) {
@@ -563,7 +590,7 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
     case vpiVectorVal: {
         static s_vpi_vecval vpiValueVecs[100];
         switch (bpb) {
-        case FSDB_BYTES_PER_BIT_1B: {
+        [[likely]] case FSDB_BYTES_PER_BIT_1B: {
             uint32_t bitSize   = vcTrvsHdl->ffrGetBitSize();
             uint32_t chunkSize = 0;
             if ((bitSize % 32) == 0) {
@@ -622,7 +649,7 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
     case vpiHexStrVal: {
         static const char hexLookUpTable[] = {'0', '1', '2', '3', '4', '4', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
         switch (bpb) {
-        case FSDB_BYTES_PER_BIT_1B: {
+        [[likely]] case FSDB_BYTES_PER_BIT_1B: {
             int bitSize   = vcTrvsHdl->ffrGetBitSize();
             int bufferIdx = 0;
             int tmpVal    = 0;
@@ -677,9 +704,9 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
         value_p->value.str = (char *)buffer;
         break;
     }
-    case vpiBinStrVal: {
+    [[unlikely]] case vpiBinStrVal: {
         switch (bpb) {
-        case FSDB_BYTES_PER_BIT_1B: {
+        [[likely]] case FSDB_BYTES_PER_BIT_1B: {
             int i = 0;
             for (i = 0; i < vcTrvsHdl->ffrGetBitSize(); i++) {
                 switch (retVC[i]) {
@@ -815,6 +842,49 @@ std::string fsdbGetBinStr(vpiHandle object) {
     vpi_get_value(object, &v);
     return std::string(v.value.str);
 }
+
+uint32_t fsdbGetSingleBitValue(vpiHandle object) {
+    auto vcTrvsHdl = reinterpret_cast<ffrVCTrvsHdl>(object);
+    byte_T *retVC;
+    fsdbBytesPerBit bpb;
+
+    auto time = fsdbWaveVpi->xtagVec[cursor.index];
+    time.hltag.L = time.hltag.L + 1; // Move a little bit further to ensure we are not in the sensitive clock edge which may lead to signal value confusion.
+    if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) [[unlikely]] {
+        auto currIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.index];
+        auto maxIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.maxIndex];
+        PANIC("vcTrvsHdl->ffrGotoXTag() failed!", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
+    }
+    if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGetVC(&retVC)) [[unlikely]] {
+        PANIC("vcTrvsHdl->ffrGetVC() failed!");
+    }
+
+    bpb = vcTrvsHdl->ffrGetBytesPerBit();
+
+    switch (bpb) {
+    [[likely]] case FSDB_BYTES_PER_BIT_1B: {
+        switch (retVC[0]) {
+            case FSDB_BT_VCD_X: // treat `X` as `0`
+            case FSDB_BT_VCD_Z: // treat `Z` as `0`
+            case FSDB_BT_VCD_0:
+                return 0;
+            case FSDB_BT_VCD_1:
+                return 1;
+            default:
+                PANIC("unknown verilog bit type found.");
+        }
+        break;
+    }
+    case FSDB_BYTES_PER_BIT_4B:
+    case FSDB_BYTES_PER_BIT_8B:
+        PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
+        break;
+    default:
+        PANIC("Should not reach here!");
+    }
+
+    PANIC("Should not come here...");
+}
 #else
 std::string _wellen_get_value_str(vpiHandle object) {
     ASSERT(object != nullptr);
@@ -840,11 +910,24 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
             
             auto t = *cb_data_p;
 #ifdef USE_FSDB
-            willAppendValueCb.emplace_back(std::make_pair(vpiHandleAllcator, ValueCbInfo{
-                .cbData = std::make_shared<t_cb_data>(*cb_data_p), 
-                .handle = cb_data_p->obj,
-                .valueStr = fsdbGetBinStr(cb_data_p->obj), 
-            }));
+            size_t bitSize = reinterpret_cast<ffrVCTrvsHdl>(cb_data_p->obj)->ffrGetBitSize();
+            if(bitSize == 1) [[likely]] {
+                willAppendValueCb.emplace_back(std::make_pair(vpiHandleAllcator, ValueCbInfo{
+                    .cbData = std::make_shared<t_cb_data>(*cb_data_p), 
+                    .handle = cb_data_p->obj,
+                    .bitSize = 1,
+                    .bitValue = fsdbGetSingleBitValue(cb_data_p->obj),
+                    .valueStr = "", 
+                }));
+            } else [[unlikely]] {
+                willAppendValueCb.emplace_back(std::make_pair(vpiHandleAllcator, ValueCbInfo{
+                    .cbData = std::make_shared<t_cb_data>(*cb_data_p), 
+                    .handle = cb_data_p->obj,
+                    .bitSize = bitSize,
+                    .bitValue = 0,
+                    .valueStr = fsdbGetBinStr(cb_data_p->obj), 
+                }));
+            }
 #else
             willAppendValueCb.emplace_back(std::make_pair(vpiHandleAllcator, ValueCbInfo{
                 .cbData = std::make_shared<t_cb_data>(*cb_data_p), 

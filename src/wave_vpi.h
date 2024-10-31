@@ -166,6 +166,8 @@ struct ValueCbInfo {
     std::shared_ptr<s_cb_data> cbData;
 #ifdef USE_FSDB
     vpiHandle handle;
+    size_t bitSize;
+    uint32_t bitValue;
 #else
     vpiHandleRaw handle;
 #endif
@@ -174,6 +176,7 @@ struct ValueCbInfo {
 
 #ifdef USE_FSDB
 std::string fsdbGetBinStr(vpiHandle object);
+uint32_t fsdbGetSingleBitValue(vpiHandle object);
 #else
 std::string _wellen_get_value_str(vpiHandle object);
 #endif
