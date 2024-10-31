@@ -157,7 +157,7 @@ FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fs
         fmt::println("[wave_vpi] FsdbWaveVpi useCachedData: {}", useCachedData);
 
         if(useCachedData) {
-            std::ifstream timeTableFile(TIME_TABLE_FILE);
+            std::ifstream timeTableFile(TIME_TABLE_FILE, std::ios::binary);
             if(timeTableFile.is_open()) {
                 std::size_t vecSize;
 
@@ -170,7 +170,7 @@ FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fs
                 xtagVec.resize(vecSize);
                 for(size_t i = 0; i < vecSize; i++) {
                     xtagVec[i].hltag.H = xtagU64Vec[i] >> 32;
-                    xtagVec[i].hltag.L = xtagU64Vec[i] & 0x0000FFFF;
+                    xtagVec[i].hltag.L = xtagU64Vec[i] & 0xFFFFFFFF;
                 }
 
                 fmt::println("[wave_vpi] FsdbWaveVpi read from timeTableFile => xtagU64Vec size: {}", xtagU64Vec.size());
@@ -205,8 +205,8 @@ NormalParse:
             std::ofstream timeTableFile(TIME_TABLE_FILE, std::ios::binary);
             std::size_t vecSize = xtagU64Vec.size();
             ASSERT(timeTableFile.is_open(), "Failed to open TIME_TABLE_FILE!", TIME_TABLE_FILE);
-            timeTableFile.write(reinterpret_cast<const char*>(&vecSize), sizeof(vecSize));
-            timeTableFile.write(reinterpret_cast<const char*>(xtagU64Vec.data()), vecSize * sizeof(uint64_t));
+            timeTableFile.write(reinterpret_cast<char *>(&vecSize), sizeof(vecSize));
+            timeTableFile.write(reinterpret_cast<char *>(xtagU64Vec.data()), vecSize * sizeof(uint64_t));
             ASSERT(timeTableFile, "Failed to write to file", TIME_TABLE_FILE);
             timeTableFile.close();
         }
