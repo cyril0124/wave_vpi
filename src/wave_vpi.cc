@@ -185,7 +185,7 @@ NormalParse:
 
             int i = 0;
             fsdbXTag xtag;
-            UNORDERED_SET<uint64_t> xtagU64Set;
+            std::set<uint64_t> xtagU64Set;
             while (FSDB_RC_SUCCESS == tbVcTrvsHdl->ffrGotoNextVC()) {
                 tbVcTrvsHdl->ffrGetXTag((void *)&xtag);
                 auto u64Xtag = Xtag64ToUInt64(xtag.hltag);

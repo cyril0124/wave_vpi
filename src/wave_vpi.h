@@ -30,11 +30,9 @@
 #warning "[wave_vpi] VL_DEF_OPT_USE_BOOST_UNORDERED is defined!"
 
 #include "boost_unordered.hpp"
-#define UNORDERED_SET boost::unordered_flat_set
 #define UNORDERED_MAP boost::unordered_flat_map
 #else
 #include <unordered_map>
-#define UNORDERED_SET std::unordered_set
 #define UNORDERED_MAP std::unordered_map
 #endif
 
