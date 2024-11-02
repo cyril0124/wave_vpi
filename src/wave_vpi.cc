@@ -288,7 +288,7 @@ extern "C" void vlog_startup_routines_bootstrap();
 
 void wave_vpi_init(const char *filename) {
 #ifdef USE_FSDB
-    fsdbWaveVpi = std::make_unique<FsdbWaveVpi>(ffrObject::ffrOpen3((char *)filename), std::string(filename));
+    fsdbWaveVpi = std::make_unique<FsdbWaveVpi>(ffrObject::ffrOpenNonSharedObj((char *)filename), std::string(filename));
     
     cursor.maxIndex = fsdbWaveVpi->xtagU64Vec.size() - 1;
     cursor.maxTime  = fsdbWaveVpi->xtagU64Vec.at(fsdbWaveVpi->xtagU64Vec.size() - 1);
@@ -518,12 +518,20 @@ vpiHandle vpi_handle_by_name(PLI_BYTE8 *name, vpiHandle scope) {
     // TODO: scope
     ASSERT(scope == nullptr);
 #ifdef USE_FSDB
-    auto hdl = fsdbWaveVpi->fsdbObj->ffrCreateVCTrvsHdl(fsdbWaveVpi->getVarIdCodeByName(name));
+    auto varIdCode = fsdbWaveVpi->getVarIdCodeByName(name);
+    auto hdl = fsdbWaveVpi->fsdbObj->ffrCreateVCTrvsHdl(varIdCode);
     if (!hdl) {
         PANIC("Failed to create value change traverse handle", name);
     }
 
-    auto vpiHdl = reinterpret_cast<vpiHandle>(hdl);
+    auto fsdbSigHdl = new FsdbSignalHandle {
+        .name = std::string(name),
+        .vcTrvsHdl = hdl,
+        .varIdCode = varIdCode,
+        .bitSize = hdl->ffrGetBitSize()
+    };
+
+    auto vpiHdl = reinterpret_cast<vpiHandle>(fsdbSigHdl);
 #else
     auto vpiHdl = reinterpret_cast<vpiHandle>(wellen_vpi_handle_by_name(name)); 
 #endif
@@ -531,15 +539,142 @@ vpiHandle vpi_handle_by_name(PLI_BYTE8 *name, vpiHandle scope) {
     return vpiHdl;
 }
 
+#ifdef USE_FSDB
+void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, FsdbSignalHandlePtr fsdbSigHdl) {
+    static std::mutex optMutex;
+
+    // Ensure only one `fsdbObj` can be processed for all the optimization threads.
+    thread_local std::unique_lock<std::mutex> lock(optMutex);
+    // thread_local std::lock_guard lock(optMutex);
+
+    thread_local ffrObject *fsdbObj = ffrObject::ffrOpenNonSharedObj((char *)(fsdbFileName).c_str());
+    ASSERT(fsdbObj != nullptr);
+    fsdbObj->ffrReadScopeVarTree();
+
+    thread_local auto hdl = fsdbObj->ffrCreateVCTrvsHdl(fsdbSigHdl->varIdCode);
+    thread_local auto bitSize = hdl->ffrGetBitSize();
+    ASSERT(hdl != nullptr, "Failed to create hdl", fsdbFileName, fsdbSigHdl->name, fsdbSigHdl->varIdCode);
+    ASSERT(bitSize <= 32, "For now we only optimize signals with bitSize <= 32");
+
+    byte_T *retVC;
+    fsdbBytesPerBit bpb;
+    for(auto idx = 0; idx < xtagVec.size() - 1; idx++) {
+        uint32_t tmpVal = 0;
+        auto time = xtagVec[idx];
+        time.hltag.L = time.hltag.L + 1;
+
+        ASSERT(FSDB_RC_SUCCESS == hdl->ffrGotoXTag(&time), "Failed to call hdl->ffrGotoXtag()", time.hltag.L, time.hltag.H, idx, fsdbSigHdl->name, fsdbFileName);
+        ASSERT(FSDB_RC_SUCCESS == hdl->ffrGetVC(&retVC), "hdl->ffrGetVC() failed!");
+
+        bpb = hdl->ffrGetBytesPerBit();
+
+        if(bitSize == 1) {
+            switch (bpb) {
+            [[likely]] case FSDB_BYTES_PER_BIT_1B: {
+                switch (retVC[0]) {
+                    case FSDB_BT_VCD_X: // treat `X` as `0`
+                    case FSDB_BT_VCD_Z: // treat `Z` as `0`
+                    case FSDB_BT_VCD_0:
+                        fsdbSigHdl->optValueVec.emplace_back(0);
+                        break;
+                    case FSDB_BT_VCD_1:
+                        fsdbSigHdl->optValueVec.emplace_back(1);
+                        break;
+                    default:
+                        PANIC("unknown verilog bit type found.");
+                }
+                break;
+            }
+            case FSDB_BYTES_PER_BIT_4B:
+            case FSDB_BYTES_PER_BIT_8B:
+                PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
+                break;
+            default:
+                PANIC("Should not reach here!");
+            }
+        } else {
+            switch (bpb) {
+            [[likely]] case FSDB_BYTES_PER_BIT_1B: {
+                for (int i = 0; i < bitSize; i++) {
+                    switch (retVC[i]) {
+                    case FSDB_BT_VCD_0:
+                        break;
+                    case FSDB_BT_VCD_1:
+                        tmpVal += 1 << (bitSize - i - 1);
+                        break;
+                    case FSDB_BT_VCD_X:
+                        // treat `X` as `0`
+                        break;
+                    case FSDB_BT_VCD_Z:
+                        // treat `Z` as `0`
+                        break;
+                    default:
+                        PANIC("unknown verilog bit type found.");
+                    }
+                }
+                break;
+            }
+            case FSDB_BYTES_PER_BIT_4B:
+                PANIC("TODO: FSDB_BYTES_PER_BIT_4B");
+                break;
+            case FSDB_BYTES_PER_BIT_8B:
+                PANIC("TODO: FSDB_BYTES_PER_BIT_8B");
+                break;
+            default:
+                PANIC("Should not reach here!");
+            }
+            fsdbSigHdl->optValueVec.emplace_back(tmpVal);
+        }
+    }
+
+    fsdbObj->ffrClose();
+    fsdbSigHdl->optFinish = true;
+
+    // fmt::println("opt finish! {}", fsdbSigHdl->name);
+
+    lock.unlock();
+}
+#endif
+
 void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
 #ifdef USE_FSDB
     static byte_T buffer[FSDB_MAX_BIT_SIZE + 1];
-    auto vcTrvsHdl = reinterpret_cast<ffrVCTrvsHdl>(object);
+    static s_vpi_vecval vpiValueVecs[100];
+    auto fsdbSigHdl = reinterpret_cast<FsdbSignalHandlePtr>(object);
+    
+    if(fsdbSigHdl->optFinish) {
+        switch (value_p->format) {
+        case vpiIntVal: {
+            value_p->value.integer = fsdbSigHdl->optValueVec[cursor.index];
+            return;
+        }
+        case vpiVectorVal: {
+            vpiValueVecs[0].aval = fsdbSigHdl->optValueVec[cursor.index];
+            vpiValueVecs[0].bval = 0;
+            value_p->value.vector = vpiValueVecs;
+            return;
+        }
+        default:
+            PANIC("Unsupported!", value_p->format);
+        }
+    } else {
+        fsdbSigHdl->readCnt++;
+
+        // Doing somthing like JIT(Just-In-Time)...
+        if(!fsdbSigHdl->doOpt && fsdbSigHdl->bitSize <= 32 && fsdbSigHdl->readCnt > JTT_COMPILE_THRESHOLD) {
+            fsdbSigHdl->doOpt = true;
+            fsdbSigHdl->optThread = std::thread(std::bind(optThreadTask, fsdbWaveVpi->waveFileName, fsdbWaveVpi->xtagVec, fsdbSigHdl));
+        }
+    }
+
+    auto vcTrvsHdl = fsdbSigHdl->vcTrvsHdl;
     byte_T *retVC;
     fsdbBytesPerBit bpb;
+    size_t bitSize = fsdbSigHdl->bitSize;
 
     auto time = fsdbWaveVpi->xtagVec[cursor.index];
     time.hltag.L = time.hltag.L + 1; // Move a little bit further to ensure we are not in the sensitive clock edge which may lead to signal value confusion.
+    
     if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) [[unlikely]] {
         auto currIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.index];
         auto maxIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.maxIndex];
@@ -556,7 +691,6 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
         value_p->value.integer = 0;
         switch (bpb) {
         [[likely]] case FSDB_BYTES_PER_BIT_1B: {
-            int bitSize = vcTrvsHdl->ffrGetBitSize();
             for (int i = 0; i < bitSize; i++) {
                 switch (retVC[i]) {
                 case FSDB_BT_VCD_0:
@@ -588,10 +722,8 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
         break;
     }
     case vpiVectorVal: {
-        static s_vpi_vecval vpiValueVecs[100];
         switch (bpb) {
         [[likely]] case FSDB_BYTES_PER_BIT_1B: {
-            uint32_t bitSize   = vcTrvsHdl->ffrGetBitSize();
             uint32_t chunkSize = 0;
             if ((bitSize % 32) == 0) {
                 chunkSize = bitSize / 32;
@@ -650,7 +782,6 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
         static const char hexLookUpTable[] = {'0', '1', '2', '3', '4', '4', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
         switch (bpb) {
         [[likely]] case FSDB_BYTES_PER_BIT_1B: {
-            int bitSize   = vcTrvsHdl->ffrGetBitSize();
             int bufferIdx = 0;
             int tmpVal    = 0;
             int tmpIdx    = 0;
@@ -769,7 +900,7 @@ PLI_BYTE8 *vpi_get_str(PLI_INT32 property, vpiHandle object) {
 #ifdef USE_FSDB
     switch (property) {
     case vpiType: {
-        auto varType = reinterpret_cast<ffrVCTrvsHdl>(object)->ffrGetVarType();
+        auto varType = reinterpret_cast<FsdbSignalHandle *>(object)->vcTrvsHdl->ffrGetVarType();
         switch (varType) {
         case FSDB_VT_VCD_REG:
             return "vpiReg";
@@ -791,7 +922,7 @@ PLI_INT32 vpi_get(PLI_INT32 property, vpiHandle object) {
 #ifdef USE_FSDB
     switch (property) {
     case vpiSize:
-        return reinterpret_cast<ffrVCTrvsHdl>(object)->ffrGetBitSize();
+        return reinterpret_cast<FsdbSignalHandlePtr>(object)->bitSize;
     default:
         PANIC("Unimplemented property", property);
     }
@@ -844,46 +975,52 @@ std::string fsdbGetBinStr(vpiHandle object) {
 }
 
 uint32_t fsdbGetSingleBitValue(vpiHandle object) {
-    auto vcTrvsHdl = reinterpret_cast<ffrVCTrvsHdl>(object);
-    byte_T *retVC;
-    fsdbBytesPerBit bpb;
+    s_vpi_value v;
+    v.format = vpiIntVal;
+    vpi_get_value(object, &v); // Use `vpi_get_value` since we have JIT-like feature in `vpi_get_value`
+    return v.value.integer;
 
-    auto time = fsdbWaveVpi->xtagVec[cursor.index];
-    time.hltag.L = time.hltag.L + 1; // Move a little bit further to ensure we are not in the sensitive clock edge which may lead to signal value confusion.
-    if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) [[unlikely]] {
-        auto currIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.index];
-        auto maxIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.maxIndex];
-        PANIC("vcTrvsHdl->ffrGotoXTag() failed!", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
-    }
-    if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGetVC(&retVC)) [[unlikely]] {
-        PANIC("vcTrvsHdl->ffrGetVC() failed!");
-    }
+    // auto fsdbSigHdl = reinterpret_cast<FsdbSignalHandlePtr>(object);
+    // auto vcTrvsHdl = fsdbSigHdl->vcTrvsHdl;
+    // byte_T *retVC;
+    // fsdbBytesPerBit bpb;
 
-    bpb = vcTrvsHdl->ffrGetBytesPerBit();
+    // auto time = fsdbWaveVpi->xtagVec[cursor.index];
+    // time.hltag.L = time.hltag.L + 1; // Move a little bit further to ensure we are not in the sensitive clock edge which may lead to signal value confusion.
+    // if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) [[unlikely]] {
+    //     auto currIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.index];
+    //     auto maxIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.maxIndex];
+    //     PANIC("vcTrvsHdl->ffrGotoXTag() failed!", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
+    // }
+    // if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGetVC(&retVC)) [[unlikely]] {
+    //     PANIC("vcTrvsHdl->ffrGetVC() failed!");
+    // }
 
-    switch (bpb) {
-    [[likely]] case FSDB_BYTES_PER_BIT_1B: {
-        switch (retVC[0]) {
-            case FSDB_BT_VCD_X: // treat `X` as `0`
-            case FSDB_BT_VCD_Z: // treat `Z` as `0`
-            case FSDB_BT_VCD_0:
-                return 0;
-            case FSDB_BT_VCD_1:
-                return 1;
-            default:
-                PANIC("unknown verilog bit type found.");
-        }
-        break;
-    }
-    case FSDB_BYTES_PER_BIT_4B:
-    case FSDB_BYTES_PER_BIT_8B:
-        PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
-        break;
-    default:
-        PANIC("Should not reach here!");
-    }
+    // bpb = vcTrvsHdl->ffrGetBytesPerBit();
 
-    PANIC("Should not come here...");
+    // switch (bpb) {
+    // [[likely]] case FSDB_BYTES_PER_BIT_1B: {
+    //     switch (retVC[0]) {
+    //         case FSDB_BT_VCD_X: // treat `X` as `0`
+    //         case FSDB_BT_VCD_Z: // treat `Z` as `0`
+    //         case FSDB_BT_VCD_0:
+    //             return 0;
+    //         case FSDB_BT_VCD_1:
+    //             return 1;
+    //         default:
+    //             PANIC("unknown verilog bit type found.");
+    //     }
+    //     break;
+    // }
+    // case FSDB_BYTES_PER_BIT_4B:
+    // case FSDB_BYTES_PER_BIT_8B:
+    //     PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
+    //     break;
+    // default:
+    //     PANIC("Should not reach here!");
+    // }
+
+    // PANIC("Should not come here...");
 }
 #else
 std::string _wellen_get_value_str(vpiHandle object) {
@@ -910,7 +1047,7 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
             
             auto t = *cb_data_p;
 #ifdef USE_FSDB
-            size_t bitSize = reinterpret_cast<ffrVCTrvsHdl>(cb_data_p->obj)->ffrGetBitSize();
+            size_t bitSize = reinterpret_cast<FsdbSignalHandlePtr>(cb_data_p->obj)->bitSize;
             if(bitSize == 1) [[likely]] {
                 willAppendValueCb.emplace_back(std::make_pair(vpiHandleAllcator, ValueCbInfo{
                     .cbData = std::make_shared<t_cb_data>(*cb_data_p), 

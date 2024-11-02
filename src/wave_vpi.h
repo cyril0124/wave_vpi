@@ -13,6 +13,8 @@
 #include <iostream>
 #include <memory>
 #include <queue>
+#include <thread>
+#include <mutex>
 #include <vector>
 #include <string>
 #include <sys/types.h>
@@ -136,6 +138,8 @@ using vpiHandleRaw = PLI_UINT32;
 using vpiCbFunc = PLI_INT32 (*)(struct t_cb_data *);
 
 #ifdef USE_FSDB
+
+#define JTT_COMPILE_THRESHOLD 10
 #define MAX_SCOPE_DEPTH 100
 #define TIME_TABLE_MAX_INDEX_VAR_CODE 10
 #define Xtag64ToUInt64(xtag64) (uint64_t)(((uint64_t)xtag64.H << 32) + xtag64.L)
@@ -160,6 +164,21 @@ class FsdbWaveVpi {
     fsdbVarIdcode getVarIdCodeByName(char *name);
     uint32_t findNearestTimeIndex(uint64_t time);
 };
+
+typedef struct {
+    std::string name;
+    ffrVCTrvsHdl vcTrvsHdl;
+    fsdbVarIdcode varIdCode;
+    size_t bitSize;
+
+    // Used by JIT-like feature
+    uint64_t readCnt = 0;
+    std::thread optThread;
+    bool doOpt = false;
+    bool optFinish = false;
+    std::vector<uint32_t> optValueVec;
+} FsdbSignalHandle, *FsdbSignalHandlePtr;
+
 #endif
 
 struct ValueCbInfo {
