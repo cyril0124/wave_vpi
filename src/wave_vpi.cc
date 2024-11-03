@@ -1,7 +1,7 @@
 #include "wave_vpi.h"
 
 #ifdef USE_FSDB
-std::unique_ptr<FsdbWaveVpi> fsdbWaveVpi;
+std::shared_ptr<FsdbWaveVpi> fsdbWaveVpi;
 
 // Used by <ffrReadScopeVarTree2>
 typedef struct {
@@ -288,7 +288,7 @@ extern "C" void vlog_startup_routines_bootstrap();
 
 void wave_vpi_init(const char *filename) {
 #ifdef USE_FSDB
-    fsdbWaveVpi = std::make_unique<FsdbWaveVpi>(ffrObject::ffrOpenNonSharedObj((char *)filename), std::string(filename));
+    fsdbWaveVpi = std::make_shared<FsdbWaveVpi>(ffrObject::ffrOpenNonSharedObj((char *)filename), std::string(filename));
     
     cursor.maxIndex = fsdbWaveVpi->xtagU64Vec.size() - 1;
     cursor.maxTime  = fsdbWaveVpi->xtagU64Vec.at(fsdbWaveVpi->xtagU64Vec.size() - 1);
@@ -544,27 +544,36 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
     static std::mutex optMutex;
 
     // Ensure only one `fsdbObj` can be processed for all the optimization threads.
-    thread_local std::unique_lock<std::mutex> lock(optMutex);
-    // thread_local std::lock_guard lock(optMutex);
+    std::unique_lock<std::mutex> lock(optMutex);
+    // std::lock_guard lock(optMutex);
 
-    thread_local ffrObject *fsdbObj = ffrObject::ffrOpenNonSharedObj((char *)(fsdbFileName).c_str());
+    ffrObject *fsdbObj = ffrObject::ffrOpenNonSharedObj(const_cast<char *>(fsdbFileName.c_str()));
     ASSERT(fsdbObj != nullptr);
     fsdbObj->ffrReadScopeVarTree();
 
-    thread_local auto hdl = fsdbObj->ffrCreateVCTrvsHdl(fsdbSigHdl->varIdCode);
-    thread_local auto bitSize = hdl->ffrGetBitSize();
+    auto hdl = fsdbObj->ffrCreateVCTrvsHdl(fsdbSigHdl->varIdCode);
+    auto bitSize = hdl->ffrGetBitSize();
     ASSERT(hdl != nullptr, "Failed to create hdl", fsdbFileName, fsdbSigHdl->name, fsdbSigHdl->varIdCode);
     ASSERT(bitSize <= 32, "For now we only optimize signals with bitSize <= 32");
-
+  
     byte_T *retVC;
     fsdbBytesPerBit bpb;
-    for(auto idx = 0; idx < xtagVec.size() - 1; idx++) {
+    auto &optValueVec = fsdbSigHdl->optValueVec;
+    optValueVec.reserve(xtagVec.size());
+
+    auto currentCursorIdx = cursor.index;
+    for(auto idx = currentCursorIdx; idx < xtagVec.size() - 1; idx++) {
         uint32_t tmpVal = 0;
         auto time = xtagVec[idx];
         time.hltag.L = time.hltag.L + 1;
 
-        ASSERT(FSDB_RC_SUCCESS == hdl->ffrGotoXTag(&time), "Failed to call hdl->ffrGotoXtag()", time.hltag.L, time.hltag.H, idx, fsdbSigHdl->name, fsdbFileName);
-        ASSERT(FSDB_RC_SUCCESS == hdl->ffrGetVC(&retVC), "hdl->ffrGetVC() failed!");
+        if(FSDB_RC_SUCCESS != hdl->ffrGotoXTag(&time)) [[unlikely]] {
+            PANIC("Failed to call hdl->ffrGotoXtag()", time.hltag.L, time.hltag.H, idx, fsdbSigHdl->name, fsdbFileName);
+        }
+
+        if(FSDB_RC_SUCCESS != hdl->ffrGetVC(&retVC)) [[unlikely]] {
+            PANIC("hdl->ffrGetVC() failed!");
+        }
 
         bpb = hdl->ffrGetBytesPerBit();
 
@@ -575,10 +584,10 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
                     case FSDB_BT_VCD_X: // treat `X` as `0`
                     case FSDB_BT_VCD_Z: // treat `Z` as `0`
                     case FSDB_BT_VCD_0:
-                        fsdbSigHdl->optValueVec.emplace_back(0);
+                        optValueVec[idx] = 0;
                         break;
                     case FSDB_BT_VCD_1:
-                        fsdbSigHdl->optValueVec.emplace_back(1);
+                        optValueVec[idx] = 1;
                         break;
                     default:
                         PANIC("unknown verilog bit type found.");
@@ -597,16 +606,12 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
             [[likely]] case FSDB_BYTES_PER_BIT_1B: {
                 for (int i = 0; i < bitSize; i++) {
                     switch (retVC[i]) {
+                    case FSDB_BT_VCD_X: // treat `X` as `0`
+                    case FSDB_BT_VCD_Z: // treat `Z` as `0`
                     case FSDB_BT_VCD_0:
                         break;
                     case FSDB_BT_VCD_1:
                         tmpVal += 1 << (bitSize - i - 1);
-                        break;
-                    case FSDB_BT_VCD_X:
-                        // treat `X` as `0`
-                        break;
-                    case FSDB_BT_VCD_Z:
-                        // treat `Z` as `0`
                         break;
                     default:
                         PANIC("unknown verilog bit type found.");
@@ -615,24 +620,24 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
                 break;
             }
             case FSDB_BYTES_PER_BIT_4B:
-                PANIC("TODO: FSDB_BYTES_PER_BIT_4B");
-                break;
             case FSDB_BYTES_PER_BIT_8B:
-                PANIC("TODO: FSDB_BYTES_PER_BIT_8B");
+                PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
                 break;
             default:
                 PANIC("Should not reach here!");
             }
-            fsdbSigHdl->optValueVec.emplace_back(tmpVal);
+            optValueVec[idx] = tmpVal;
         }
     }
 
     fsdbObj->ffrClose();
     fsdbSigHdl->optFinish = true;
 
-    // fmt::println("opt finish! {}", fsdbSigHdl->name);
-
     lock.unlock();
+
+    if(std::string(std::getenv("WAVE_VPI_VERBOSE_JIT")) == "1") {
+        fmt::println("[optThreadTask] opt finish! {} currentCursorIdx:{} xtagVec.size:{}", fsdbSigHdl->name, currentCursorIdx, xtagVec.size());
+    }
 }
 #endif
 
@@ -652,6 +657,22 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
             vpiValueVecs[0].aval = fsdbSigHdl->optValueVec[cursor.index];
             vpiValueVecs[0].bval = 0;
             value_p->value.vector = vpiValueVecs;
+            return;
+        }
+        case vpiHexStrVal: {
+            const int bufferSize = 8; // TODO: 4 * 8 = 32, if support 64 bit signal, this value should be set to 16. 
+            snprintf(reinterpret_cast<char *>(buffer), bufferSize, "%x", fsdbSigHdl->optValueVec[cursor.index]);
+            value_p->value.str = (char *)buffer;
+            return;
+        }
+        case vpiBinStrVal: {
+            auto &bitSize = fsdbSigHdl->bitSize;
+            auto value = fsdbSigHdl->optValueVec[cursor.index];
+            for (int i = 0; i < bitSize; i++) {
+                buffer[bitSize - 1 - i] = (value & (1 << i)) ? '1' : '0';
+            }
+            buffer[bitSize] = '\0';
+            value_p->value.str = (char *)buffer;
             return;
         }
         default:
@@ -792,7 +813,7 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
                 chunkSize = bitSize / 4 + 1;
             }
             
-            for (int i = vcTrvsHdl->ffrGetBitSize() - 1; i >= 0; i--) {
+            for (int i = bitSize - 1; i >= 0; i--) {
                 switch (retVC[i]) {
                 case FSDB_BT_VCD_0:
                     break;
@@ -839,7 +860,7 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
         switch (bpb) {
         [[likely]] case FSDB_BYTES_PER_BIT_1B: {
             int i = 0;
-            for (i = 0; i < vcTrvsHdl->ffrGetBitSize(); i++) {
+            for (i = 0; i < bitSize; i++) {
                 switch (retVC[i]) {
                 case FSDB_BT_VCD_0:
                     buffer[i] = '0';
@@ -967,14 +988,14 @@ PLI_INT32 vpi_control(PLI_INT32 operation, ...) {
 }
 
 #ifdef USE_FSDB
-std::string fsdbGetBinStr(vpiHandle object) {
+inline std::string fsdbGetBinStr(vpiHandle object) {
     s_vpi_value v;
     v.format = vpiBinStrVal;
     vpi_get_value(object, &v);
     return std::string(v.value.str);
 }
 
-uint32_t fsdbGetSingleBitValue(vpiHandle object) {
+inline uint32_t fsdbGetSingleBitValue(vpiHandle object) {
     s_vpi_value v;
     v.format = vpiIntVal;
     vpi_get_value(object, &v); // Use `vpi_get_value` since we have JIT-like feature in `vpi_get_value`
@@ -1023,7 +1044,7 @@ uint32_t fsdbGetSingleBitValue(vpiHandle object) {
     // PANIC("Should not come here...");
 }
 #else
-std::string _wellen_get_value_str(vpiHandle object) {
+inline std::string _wellen_get_value_str(vpiHandle object) {
     ASSERT(object != nullptr);
     return std::string(wellen_get_value_str(reinterpret_cast<void *>(object), cursor.index));
 }
