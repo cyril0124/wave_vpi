@@ -15,6 +15,8 @@
 #include <queue>
 #include <thread>
 #include <mutex>
+#include <atomic>
+#include <condition_variable>
 #include <vector>
 #include <string>
 #include <sys/types.h>
@@ -140,6 +142,10 @@ using vpiCbFunc = PLI_INT32 (*)(struct t_cb_data *);
 #ifdef USE_FSDB
 
 #define JTT_COMPILE_THRESHOLD 10
+#define JIT_COMPILE_INDEX_WINDOW  200000
+#define JIT_RECOMPILE_WINDOW_SIZE 100000
+#define JIT_DEFAULT_MAX_OPT_THREADS 20 // Maximum threads(default) that are allowed to be run for JIT optimization. This value can be overridden by enviroment variable: WAVE_VPI_MAX_OPT_THREADS
+
 #define MAX_SCOPE_DEPTH 100
 #define TIME_TABLE_MAX_INDEX_VAR_CODE 10
 #define Xtag64ToUInt64(xtag64) (uint64_t)(((uint64_t)xtag64.H << 32) + xtag64.L)
@@ -176,7 +182,11 @@ typedef struct {
     std::thread optThread;
     bool doOpt = false;
     bool optFinish = false;
+    bool continueOpt = false;
     std::vector<uint32_t> optValueVec;
+    uint64_t optFinishIdx;
+    std::condition_variable cv;
+    std::mutex mtx;
 } FsdbSignalHandle, *FsdbSignalHandlePtr;
 
 #endif

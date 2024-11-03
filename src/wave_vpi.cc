@@ -2,6 +2,7 @@
 
 #ifdef USE_FSDB
 std::shared_ptr<FsdbWaveVpi> fsdbWaveVpi;
+uint32_t maxOptThreads = JIT_DEFAULT_MAX_OPT_THREADS;
 
 // Used by <ffrReadScopeVarTree2>
 typedef struct {
@@ -214,6 +215,12 @@ NormalParse:
         // Recreate tbVcTrvsHdl to reset the xtag to start point
         tbVcTrvsHdl->ffrFree();
         tbVcTrvsHdl = fsdbObj->ffrCreateTimeBasedVCTrvsHdl(sigNum, sigArr);
+        
+        auto _maxOptThreads = std::getenv("WAVE_VPI_MAX_OPT_THREADS");
+        if(_maxOptThreads != nullptr) {
+            maxOptThreads = std::stoul(_maxOptThreads);
+        }
+        fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_MAX_OPT_THREADS:{}", maxOptThreads);
     }
 }
 
@@ -540,12 +547,13 @@ vpiHandle vpi_handle_by_name(PLI_BYTE8 *name, vpiHandle scope) {
 }
 
 #ifdef USE_FSDB
+std::atomic<uint32_t> optThreadCnt = 0;
+
 void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, FsdbSignalHandlePtr fsdbSigHdl) {
     static std::mutex optMutex;
 
-    // Ensure only one `fsdbObj` can be processed for all the optimization threads.
+    // Ensure only one `fsdbObj` can be processed for all the optimization threads. (It seems like a bug that FsdbReader did not allow multiple ffrObjects to be processed at multiple threads. )
     std::unique_lock<std::mutex> lock(optMutex);
-    // std::lock_guard lock(optMutex);
 
     ffrObject *fsdbObj = ffrObject::ffrOpenNonSharedObj(const_cast<char *>(fsdbFileName.c_str()));
     ASSERT(fsdbObj != nullptr);
@@ -556,87 +564,144 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
     ASSERT(hdl != nullptr, "Failed to create hdl", fsdbFileName, fsdbSigHdl->name, fsdbSigHdl->varIdCode);
     ASSERT(bitSize <= 32, "For now we only optimize signals with bitSize <= 32");
   
-    byte_T *retVC;
-    fsdbBytesPerBit bpb;
     auto &optValueVec = fsdbSigHdl->optValueVec;
     optValueVec.reserve(xtagVec.size());
 
     auto currentCursorIdx = cursor.index;
-    for(auto idx = currentCursorIdx; idx < xtagVec.size() - 1; idx++) {
-        uint32_t tmpVal = 0;
-        auto time = xtagVec[idx];
-        time.hltag.L = time.hltag.L + 1;
+    auto optFinishIdx = currentCursorIdx + JIT_COMPILE_INDEX_WINDOW;
 
-        if(FSDB_RC_SUCCESS != hdl->ffrGotoXTag(&time)) [[unlikely]] {
-            PANIC("Failed to call hdl->ffrGotoXtag()", time.hltag.L, time.hltag.H, idx, fsdbSigHdl->name, fsdbFileName);
-        }
-
-        if(FSDB_RC_SUCCESS != hdl->ffrGetVC(&retVC)) [[unlikely]] {
-            PANIC("hdl->ffrGetVC() failed!");
-        }
-
-        bpb = hdl->ffrGetBytesPerBit();
-
-        if(bitSize == 1) {
-            switch (bpb) {
-            [[likely]] case FSDB_BYTES_PER_BIT_1B: {
-                switch (retVC[0]) {
-                    case FSDB_BT_VCD_X: // treat `X` as `0`
-                    case FSDB_BT_VCD_Z: // treat `Z` as `0`
-                    case FSDB_BT_VCD_0:
-                        optValueVec[idx] = 0;
-                        break;
-                    case FSDB_BT_VCD_1:
-                        optValueVec[idx] = 1;
-                        break;
-                    default:
-                        PANIC("unknown verilog bit type found.");
-                }
-                break;
-            }
-            case FSDB_BYTES_PER_BIT_4B:
-            case FSDB_BYTES_PER_BIT_8B:
-                PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
-                break;
-            default:
-                PANIC("Should not reach here!");
-            }
-        } else {
-            switch (bpb) {
-            [[likely]] case FSDB_BYTES_PER_BIT_1B: {
-                for (int i = 0; i < bitSize; i++) {
-                    switch (retVC[i]) {
-                    case FSDB_BT_VCD_X: // treat `X` as `0`
-                    case FSDB_BT_VCD_Z: // treat `Z` as `0`
-                    case FSDB_BT_VCD_0:
-                        break;
-                    case FSDB_BT_VCD_1:
-                        tmpVal += 1 << (bitSize - i - 1);
-                        break;
-                    default:
-                        PANIC("unknown verilog bit type found.");
-                    }
-                }
-                break;
-            }
-            case FSDB_BYTES_PER_BIT_4B:
-            case FSDB_BYTES_PER_BIT_8B:
-                PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
-                break;
-            default:
-                PANIC("Should not reach here!");
-            }
-            optValueVec[idx] = tmpVal;
-        }
+    if(optFinishIdx >= xtagVec.size()) {
+        optFinishIdx = xtagVec.size() - 1;
     }
 
-    fsdbObj->ffrClose();
+    auto optFunc = [&hdl, &xtagVec, &bitSize, &fsdbFileName, fsdbSigHdl](size_t startIdx, size_t finishIdx) {
+        byte_T *retVC;
+        fsdbBytesPerBit bpb;
+
+        auto &optValueVec = fsdbSigHdl->optValueVec;
+
+        for(auto idx = startIdx; idx < finishIdx; idx++) {
+            uint32_t tmpVal = 0;
+            auto time = xtagVec[idx];
+            time.hltag.L = time.hltag.L + 1;
+
+            if(FSDB_RC_SUCCESS != hdl->ffrGotoXTag(&time)) [[unlikely]] {
+                PANIC("Failed to call hdl->ffrGotoXtag()", time.hltag.L, time.hltag.H, idx, fsdbSigHdl->name, fsdbFileName);
+            }
+
+            if(FSDB_RC_SUCCESS != hdl->ffrGetVC(&retVC)) [[unlikely]] {
+                PANIC("hdl->ffrGetVC() failed!");
+            }
+
+            bpb = hdl->ffrGetBytesPerBit();
+
+            if(bitSize == 1) {
+                switch (bpb) {
+                [[likely]] case FSDB_BYTES_PER_BIT_1B: {
+                    switch (retVC[0]) {
+                        case FSDB_BT_VCD_X: // treat `X` as `0`
+                        case FSDB_BT_VCD_Z: // treat `Z` as `0`
+                        case FSDB_BT_VCD_0:
+                            optValueVec[idx] = 0;
+                            break;
+                        case FSDB_BT_VCD_1:
+                            optValueVec[idx] = 1;
+                            break;
+                        default:
+                            PANIC("unknown verilog bit type found.");
+                    }
+                    break;
+                }
+                case FSDB_BYTES_PER_BIT_4B:
+                case FSDB_BYTES_PER_BIT_8B:
+                    PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
+                    break;
+                default:
+                    PANIC("Should not reach here!");
+                }
+            } else {
+                switch (bpb) {
+                [[likely]] case FSDB_BYTES_PER_BIT_1B: {
+                    for (int i = 0; i < bitSize; i++) {
+                        switch (retVC[i]) {
+                        case FSDB_BT_VCD_X: // treat `X` as `0`
+                        case FSDB_BT_VCD_Z: // treat `Z` as `0`
+                        case FSDB_BT_VCD_0:
+                            break;
+                        case FSDB_BT_VCD_1:
+                            tmpVal += 1 << (bitSize - i - 1);
+                            break;
+                        default:
+                            PANIC("unknown verilog bit type found.");
+                        }
+                    }
+                    break;
+                }
+                case FSDB_BYTES_PER_BIT_4B:
+                case FSDB_BYTES_PER_BIT_8B:
+                    PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
+                    break;
+                default:
+                    PANIC("Should not reach here!");
+                }
+                optValueVec[idx] = tmpVal;
+            }
+        }
+    };
+
+    optFunc(currentCursorIdx, optFinishIdx);
+
     fsdbSigHdl->optFinish = true;
+    fsdbSigHdl->optFinishIdx = optFinishIdx;
 
     lock.unlock();
 
-    if(std::string(std::getenv("WAVE_VPI_VERBOSE_JIT")) == "1") {
-        fmt::println("[optThreadTask] opt finish! {} currentCursorIdx:{} xtagVec.size:{}", fsdbSigHdl->name, currentCursorIdx, xtagVec.size());
+    auto _verbose_jit = std::getenv("WAVE_VPI_VERBOSE_JIT");
+    auto verbose_jit = false;
+    if(_verbose_jit != nullptr) {
+        verbose_jit = std::string(_verbose_jit) == "1";
+    }
+
+    if(verbose_jit) {
+        fmt::println("[optThreadTask] First optimization finish! {} currentCursorIdx:{} optFinishIdx:{}", fsdbSigHdl->name, currentCursorIdx, optFinishIdx);
+    }
+
+    int optCnt = 0;
+    std::unique_lock<std::mutex> continueOptLock(fsdbSigHdl->mtx);
+    while(true) {
+        fsdbSigHdl->cv.wait(continueOptLock, [fsdbSigHdl]() { return fsdbSigHdl->continueOpt; });
+
+
+        // Continue optimization
+        auto optFinish = false;
+        auto optStartIdx = fsdbSigHdl->optFinishIdx;
+        auto optFinishIdx = fsdbSigHdl->optFinishIdx + JIT_COMPILE_INDEX_WINDOW;
+        if(optFinishIdx >= xtagVec.size()) {
+            optFinishIdx = xtagVec.size() - 1;
+            optFinish = true;
+        }
+        optFunc(optStartIdx, optFinishIdx);
+
+        fsdbSigHdl->optFinishIdx = optFinishIdx;
+        fsdbSigHdl->continueOpt = false;
+
+        optCnt++;
+
+        if(verbose_jit) {
+            fmt::println("[optThreadTask] [{}] Continue optimization... {} optStartIdx:{} optFinishIdx:{}", optCnt, fsdbSigHdl->name, optStartIdx, optFinishIdx);
+        }
+
+        if(optFinish) {
+            break;
+        }
+    }
+
+    optThreadCnt.store(optThreadCnt.load() - 1);
+
+    // fsdbObj->ffrClose();
+    if(verbose_jit) {
+        fmt::println("[optThreadTask] Optimization finish! total compile times:{} signalName:{}", optCnt, fsdbSigHdl->name);
+        optCnt++;
     }
 }
 #endif
@@ -648,6 +713,15 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
     auto fsdbSigHdl = reinterpret_cast<FsdbSignalHandlePtr>(object);
     
     if(fsdbSigHdl->optFinish) {
+        if(cursor.index >= fsdbSigHdl->optFinishIdx) {
+            // fmt::println("[WARN] JIT need recompile! cursor.index:{} optFinishIdx:{} signalName:{}", cursor.index, fsdbSigHdl->optFinishIdx, fsdbSigHdl->name);
+            goto ReadFromFSDB;
+        } else if(cursor.index >= (fsdbSigHdl->optFinishIdx - JIT_RECOMPILE_WINDOW_SIZE)) {
+            // fmt::println("[WARN] continue optimization... {} cursot.index:{} optFinishIdx:{}", fsdbSigHdl->name, cursor.index, fsdbSigHdl->optFinishIdx);
+            fsdbSigHdl->continueOpt = true;
+            fsdbSigHdl->cv.notify_all();
+        }
+
         switch (value_p->format) {
         case vpiIntVal: {
             value_p->value.integer = fsdbSigHdl->optValueVec[cursor.index];
@@ -683,10 +757,17 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
 
         // Doing somthing like JIT(Just-In-Time)...
         if(!fsdbSigHdl->doOpt && fsdbSigHdl->bitSize <= 32 && fsdbSigHdl->readCnt > JTT_COMPILE_THRESHOLD) {
-            fsdbSigHdl->doOpt = true;
-            fsdbSigHdl->optThread = std::thread(std::bind(optThreadTask, fsdbWaveVpi->waveFileName, fsdbWaveVpi->xtagVec, fsdbSigHdl));
+            auto _optThreadCnt = optThreadCnt.load();
+            if(_optThreadCnt <= maxOptThreads) {
+                optThreadCnt.store(_optThreadCnt + 1);
+                fsdbSigHdl->doOpt = true;
+                fsdbSigHdl->continueOpt = false;
+                fsdbSigHdl->optThread = std::thread(std::bind(optThreadTask, fsdbWaveVpi->waveFileName, fsdbWaveVpi->xtagVec, fsdbSigHdl));
+            }
         }
     }
+
+ReadFromFSDB:
 
     auto vcTrvsHdl = fsdbSigHdl->vcTrvsHdl;
     byte_T *retVC;
