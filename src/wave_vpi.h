@@ -141,9 +141,9 @@ using vpiCbFunc = PLI_INT32 (*)(struct t_cb_data *);
 
 #ifdef USE_FSDB
 
-#define JTT_COMPILE_THRESHOLD 10
-#define JIT_COMPILE_INDEX_WINDOW  200000
-#define JIT_RECOMPILE_WINDOW_SIZE 100000
+#define JTT_DEFAULT_HOT_ACCESS_THRESHOLD 10
+#define JTT_DEFAULT_COMPILE_THRESHOLD  200000
+#define JIT_DEFAULT_RECOMPILE_WINDOW_SIZE 200000
 #define JIT_DEFAULT_MAX_OPT_THREADS 20 // Maximum threads(default) that are allowed to be run for JIT optimization. This value can be overridden by enviroment variable: WAVE_VPI_MAX_OPT_THREADS
 
 #define MAX_SCOPE_DEPTH 100

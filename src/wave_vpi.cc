@@ -2,7 +2,13 @@
 
 #ifdef USE_FSDB
 std::shared_ptr<FsdbWaveVpi> fsdbWaveVpi;
-uint32_t maxOptThreads = JIT_DEFAULT_MAX_OPT_THREADS;
+
+std::atomic<uint32_t> jitOptThreadCnt = 0;
+uint32_t jitMaxOptThreads = JIT_DEFAULT_MAX_OPT_THREADS;
+uint64_t jitHotAccessThreshold = JTT_DEFAULT_HOT_ACCESS_THRESHOLD;
+uint64_t jitCompileThreshold = JTT_DEFAULT_COMPILE_THRESHOLD;
+uint64_t jitCompileWindowSize = JIT_DEFAULT_RECOMPILE_WINDOW_SIZE;
+uint64_t jitRecompileWindowSize = JIT_DEFAULT_RECOMPILE_WINDOW_SIZE;
 
 // Used by <ffrReadScopeVarTree2>
 typedef struct {
@@ -216,11 +222,42 @@ NormalParse:
         tbVcTrvsHdl->ffrFree();
         tbVcTrvsHdl = fsdbObj->ffrCreateTimeBasedVCTrvsHdl(sigNum, sigArr);
         
-        auto _maxOptThreads = std::getenv("WAVE_VPI_MAX_OPT_THREADS");
-        if(_maxOptThreads != nullptr) {
-            maxOptThreads = std::stoul(_maxOptThreads);
+        auto _jitMaxOptThreads = std::getenv("WAVE_VPI_JIT_MAX_OPT_THREADS");
+        if(_jitMaxOptThreads != nullptr) {
+            jitMaxOptThreads = std::stoul(_jitMaxOptThreads);
         }
-        fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_MAX_OPT_THREADS:{}", maxOptThreads);
+        fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_JIT_MAX_OPT_THREADS:{}", jitMaxOptThreads);
+
+        auto _jitHotAccessThreshold = std::getenv("WAVE_VPI_JIT_HOT_ACCESS_THRESHOLD");
+        if(_jitHotAccessThreshold != nullptr) {
+            jitHotAccessThreshold = std::stoull(_jitHotAccessThreshold);
+        }
+        fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_JIT_HOT_ACCESS_THRESHOLD:{}", jitHotAccessThreshold);
+
+        auto _jitCompileThreshold = std::getenv("WAVE_VPI_JIT_COMPILE_THRESHOLD");
+        if(_jitCompileThreshold != nullptr) {
+            jitCompileThreshold = std::stoull(_jitCompileThreshold);
+        }
+        fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_JIT_COMPILE_THRESHOLD:{}", jitCompileThreshold);
+
+        auto _jitCompileWindowSize = std::getenv("WAVE_VPI_JIT_COMPILE_WINDOW_SIZE");
+        if(_jitCompileWindowSize != nullptr) {
+            jitCompileWindowSize = std::stoull(_jitCompileWindowSize);
+        }
+        fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_JIT_COMPILE_WINDOW_SIZE:{}", jitCompileWindowSize);
+
+        auto _jitRecompileWindowSize = std::getenv("WAVE_VPI_JIT_RECOMPILE_WINDOW_SIZE");
+        if(_jitRecompileWindowSize != nullptr) {
+            if(std::string(_jitRecompileWindowSize) == "-1") {
+                jitRecompileWindowSize = jitCompileWindowSize;
+                fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_JIT_RECOMPILE_WINDOW_SIZE = WAVE_VPI_JIT_COMPILE_WINDOW_SIZE = {}", jitRecompileWindowSize);
+            } else {
+                jitRecompileWindowSize = std::stoull(_jitRecompileWindowSize);
+                fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_JIT_RECOMPILE_WINDOW_SIZE:{}", jitRecompileWindowSize);
+            }
+        }
+
+        ASSERT(jitRecompileWindowSize <= jitCompileWindowSize, "`jitRecompileWindowSize` should less than or equal to `jitCompileWindowSize`", jitRecompileWindowSize, jitCompileWindowSize);
     }
 }
 
@@ -547,7 +584,6 @@ vpiHandle vpi_handle_by_name(PLI_BYTE8 *name, vpiHandle scope) {
 }
 
 #ifdef USE_FSDB
-std::atomic<uint32_t> optThreadCnt = 0;
 
 void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, FsdbSignalHandlePtr fsdbSigHdl) {
     static std::mutex optMutex;
@@ -568,7 +604,7 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
     optValueVec.reserve(xtagVec.size());
 
     auto currentCursorIdx = cursor.index;
-    auto optFinishIdx = currentCursorIdx + JIT_COMPILE_INDEX_WINDOW;
+    auto optFinishIdx = currentCursorIdx + jitCompileWindowSize;
 
     if(optFinishIdx >= xtagVec.size()) {
         optFinishIdx = xtagVec.size() - 1;
@@ -675,7 +711,7 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
         // Continue optimization
         auto optFinish = false;
         auto optStartIdx = fsdbSigHdl->optFinishIdx;
-        auto optFinishIdx = fsdbSigHdl->optFinishIdx + JIT_COMPILE_INDEX_WINDOW;
+        auto optFinishIdx = fsdbSigHdl->optFinishIdx + jitCompileWindowSize;
         if(optFinishIdx >= xtagVec.size()) {
             optFinishIdx = xtagVec.size() - 1;
             optFinish = true;
@@ -696,7 +732,7 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
         }
     }
 
-    optThreadCnt.store(optThreadCnt.load() - 1);
+    jitOptThreadCnt.store(jitOptThreadCnt.load() - 1);
 
     // fsdbObj->ffrClose();
     if(verbose_jit) {
@@ -716,7 +752,7 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
         if(cursor.index >= fsdbSigHdl->optFinishIdx) {
             // fmt::println("[WARN] JIT need recompile! cursor.index:{} optFinishIdx:{} signalName:{}", cursor.index, fsdbSigHdl->optFinishIdx, fsdbSigHdl->name);
             goto ReadFromFSDB;
-        } else if(cursor.index >= (fsdbSigHdl->optFinishIdx - JIT_RECOMPILE_WINDOW_SIZE)) {
+        } else if(cursor.index >= (fsdbSigHdl->optFinishIdx - jitRecompileWindowSize)) {
             // fmt::println("[WARN] continue optimization... {} cursot.index:{} optFinishIdx:{}", fsdbSigHdl->name, cursor.index, fsdbSigHdl->optFinishIdx);
             fsdbSigHdl->continueOpt = true;
             fsdbSigHdl->cv.notify_all();
@@ -756,10 +792,10 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
         fsdbSigHdl->readCnt++;
 
         // Doing somthing like JIT(Just-In-Time)...
-        if(!fsdbSigHdl->doOpt && fsdbSigHdl->bitSize <= 32 && fsdbSigHdl->readCnt > JTT_COMPILE_THRESHOLD) {
-            auto _optThreadCnt = optThreadCnt.load();
-            if(_optThreadCnt <= maxOptThreads) {
-                optThreadCnt.store(_optThreadCnt + 1);
+        if(!fsdbSigHdl->doOpt && fsdbSigHdl->bitSize <= 32 && fsdbSigHdl->readCnt > jitHotAccessThreshold) {
+            auto _jitOptThreadCnt = jitOptThreadCnt.load();
+            if(_jitOptThreadCnt <= jitMaxOptThreads) {
+                jitOptThreadCnt.store(_jitOptThreadCnt + 1);
                 fsdbSigHdl->doOpt = true;
                 fsdbSigHdl->continueOpt = false;
                 fsdbSigHdl->optThread = std::thread(std::bind(optThreadTask, fsdbWaveVpi->waveFileName, fsdbWaveVpi->xtagVec, fsdbSigHdl));
