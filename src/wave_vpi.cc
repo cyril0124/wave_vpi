@@ -344,7 +344,7 @@ void wave_vpi_init(const char *filename) {
 #endif
 }
 
-void endOfSimulation(bool isSignalHandler = false) {
+void endOfSimulation() {
     static bool isEndOfSimulation = false;
     
     if(endOfSimulationCb && !isEndOfSimulation) {
@@ -353,10 +353,6 @@ void endOfSimulation(bool isSignalHandler = false) {
         wellen_vpi_finalize();
 #endif
         endOfSimulationCb->cb_rtn(endOfSimulationCb.get());
-
-        if(!isSignalHandler) {
-            exit(0);
-        }
     }
 }
 
@@ -367,7 +363,7 @@ void sigint_handler(int unused) {
 ---------------------------------------------------------------------
 )");
 
-    endOfSimulation(true);
+    endOfSimulation();
 
     exit(0);
 }
@@ -379,7 +375,7 @@ void sigabrt_handler(int unused) {
 ---------------------------------------------------------------------
 )");
 
-    endOfSimulation(true);
+    endOfSimulation();
 
     exit(1);
 }
@@ -535,6 +531,7 @@ void wave_vpi_main() {
     
     // End of simulation
     endOfSimulation();
+    exit(0);
 }
 
 
@@ -1095,8 +1092,7 @@ PLI_INT32 vpi_control(PLI_INT32 operation, ...) {
                 VL_INFO("get vpiFinish\n");
             }
             endOfSimulation();
-            // exit(0);
-            break;
+            return 1;
         default:
             ASSERT(false, "Unsupported operation", operation);
             break;
