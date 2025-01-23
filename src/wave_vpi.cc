@@ -4,6 +4,7 @@
 std::shared_ptr<FsdbWaveVpi> fsdbWaveVpi;
 
 std::atomic<uint32_t> jitOptThreadCnt = 0;
+bool enableJIT = true;
 uint32_t jitMaxOptThreads = JIT_DEFAULT_MAX_OPT_THREADS;
 uint64_t jitHotAccessThreshold = JTT_DEFAULT_HOT_ACCESS_THRESHOLD;
 uint64_t jitCompileThreshold = JTT_DEFAULT_COMPILE_THRESHOLD;
@@ -221,6 +222,12 @@ NormalParse:
         // Recreate tbVcTrvsHdl to reset the xtag to start point
         tbVcTrvsHdl->ffrFree();
         tbVcTrvsHdl = fsdbObj->ffrCreateTimeBasedVCTrvsHdl(sigNum, sigArr);
+
+        auto _enableJIT = std::getenv("WAVE_VPI_ENABLE_JIT");
+        if(_enableJIT != nullptr) {
+            enableJIT  = std::string(_enableJIT) == "1";
+        }
+        fmt::println("[wave_vpi] FsdbWaveVpi WAVE_VPI_ENABLE_JIT:{}", enableJIT);
         
         auto _jitMaxOptThreads = std::getenv("WAVE_VPI_JIT_MAX_OPT_THREADS");
         if(_jitMaxOptThreads != nullptr) {
@@ -745,6 +752,8 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
     static s_vpi_vecval vpiValueVecs[100];
     auto fsdbSigHdl = reinterpret_cast<FsdbSignalHandlePtr>(object);
     
+    if(!enableJIT) goto ReadFromFSDB;
+
     if(fsdbSigHdl->optFinish) {
         if(cursor.index >= fsdbSigHdl->optFinishIdx) {
             // fmt::println("[WARN] JIT need recompile! cursor.index:{} optFinishIdx:{} signalName:{}", cursor.index, fsdbSigHdl->optFinishIdx, fsdbSigHdl->name);
