@@ -106,7 +106,18 @@ FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fs
 
         fmt::println("[wave_vpi] FsdbWaveVpi start load all signals...");
         fflush(stdout);
-        for (int i = FSDB_MIN_VAR_IDCODE; i <= TIME_TABLE_MAX_INDEX_VAR_CODE; i++) {
+            
+        uint32_t maxIndexVarCode = TIME_TABLE_MAX_INDEX_VAR_CODE;
+        auto _maxIndexVarCode = std::getenv("MAX_INDEX_VAR_CODE");
+        if(_maxIndexVarCode != nullptr) {
+            maxIndexVarCode = std::stoull(_maxIndexVarCode);
+            sigNum = maxIndexVarCode;
+        }
+
+        fmt::println("[wave_vpi] FsdbWaveVpi TIME_TABLE_MAX_INDEX_VAR_CODE => {}", maxIndexVarCode);
+        fflush(stdout);
+
+        for (int i = FSDB_MIN_VAR_IDCODE; i <= maxIndexVarCode; i++) {
             // !! DO NOT try to load all signals !!
             fsdbObj->ffrAddToSignalList(i);
             sigArr[i - 1] = i;

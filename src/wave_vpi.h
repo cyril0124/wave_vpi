@@ -148,6 +148,7 @@ using vpiCbFunc = PLI_INT32 (*)(struct t_cb_data *);
 
 #define MAX_SCOPE_DEPTH 100
 #define TIME_TABLE_MAX_INDEX_VAR_CODE 10
+#define TIME_TABLE_MAX_INDEX_VAR_CODE_MAX 2000
 #define Xtag64ToUInt64(xtag64) (uint64_t)(((uint64_t)xtag64.H << 32) + xtag64.L)
 
 class FsdbWaveVpi {
@@ -156,7 +157,7 @@ class FsdbWaveVpi {
     ffrObject *fsdbObj;
     ffrFSDBInfo fsdbInfo;
     fsdbVarIdcode maxVarIdcode;
-    fsdbVarIdcode sigArr[TIME_TABLE_MAX_INDEX_VAR_CODE];
+    fsdbVarIdcode sigArr[TIME_TABLE_MAX_INDEX_VAR_CODE_MAX];
     ffrTimeBasedVCTrvsHdl tbVcTrvsHdl;
 
     uint32_t sigNum = TIME_TABLE_MAX_INDEX_VAR_CODE;
