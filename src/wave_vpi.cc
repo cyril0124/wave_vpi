@@ -297,8 +297,9 @@ fsdbVarIdcode FsdbWaveVpi::getVarIdCodeByName(char *name) {
     FsdbTreeCbContext contextData = {.desiredDepth = static_cast<int>(std::count(fullName.begin(), fullName.end(), '.')), .fullName = fullName, .retVarIdCode = 0};
     fsdbObj->ffrReadScopeVarTree2(fsdbTreeCb, (void *)&contextData);
 
-    ASSERT(contextData.retVarIdCode != 0, "Failed to find varIdCode", name);
-
+    if(contextData.retVarIdCode == 0) {
+        return -1;
+    }
     return contextData.retVarIdCode;
 }
 
@@ -578,6 +579,10 @@ vpiHandle vpi_handle_by_name(PLI_BYTE8 *name, vpiHandle scope) {
     ASSERT(scope == nullptr);
 #ifdef USE_FSDB
     auto varIdCode = fsdbWaveVpi->getVarIdCodeByName(name);
+    if(varIdCode == -1) {
+        return nullptr;
+    }
+
     auto hdl = fsdbWaveVpi->fsdbObj->ffrCreateVCTrvsHdl(varIdCode);
     if (!hdl) {
         PANIC("Failed to create value change traverse handle", name);
