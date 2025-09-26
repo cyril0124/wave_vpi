@@ -86,16 +86,16 @@ FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fs
     strncpy(fsdbName, this->waveFileName.c_str(), FSDB_MAX_PATH);
 
     if (FALSE == ffrObject::ffrIsFSDB(fsdbName)) {
-        PANIC("not an fsdb file!", this->waveFileName);
+        VL_FATAL(false, "not an fsdb file! {}", this->waveFileName);
     } else {
         ffrObject::ffrGetFSDBInfo(fsdbName, fsdbInfo);
         if (FSDB_FT_VERILOG != fsdbInfo.file_type) {
-            PANIC("fsdb file type is not verilog", this->waveFileName);
+            VL_FATAL(false, "fsdb file type is not verilog! {}", this->waveFileName);
         }
 
         // fsdbObj = std::make_shared<ffrObject>(ffrObject::ffrOpen3(fsdbName));
         // if (NULL == fsdbObj) {
-        //     PANIC("ffrObject::ffrOpen() failed", this->waveFileName);
+        //     VL_FATAL(false, "ffrObject::ffrOpen() failed", this->waveFileName);
         // } else {
         //     fmt::println("[wave_vpi] FsdbWaveVpi open fsdb file:{} SUCCESS!", this->waveFileName);
         //     fflush(stdout);
@@ -131,7 +131,7 @@ FsdbWaveVpi::FsdbWaveVpi(ffrObject *fsdbObj, std::string_view waveFileName) : fs
         }
         tbVcTrvsHdl = fsdbObj->ffrCreateTimeBasedVCTrvsHdl(sigNum, sigArr);
         if (NULL == tbVcTrvsHdl) {
-            PANIC("Failed to create time based vc trvs hdl! please re-execute the program.", sigNum, sigArr, this->waveFileName);
+            VL_FATAL(false, "Failed to create time based vc trvs hdl! please re-execute the program. sigNum: {}, waveFileName: {}", sigNum, this->waveFileName);
         }
 
         bool useCachedData = false;
@@ -223,10 +223,10 @@ NormalParse:
             // Save time table into file so that we do not require much time to parse time table.
             std::ofstream timeTableFile(TIME_TABLE_FILE, std::ios::binary);
             std::size_t vecSize = xtagU64Vec.size();
-            ASSERT(timeTableFile.is_open(), "Failed to open TIME_TABLE_FILE!", TIME_TABLE_FILE);
+            VL_FATAL(timeTableFile.is_open(), "Failed to open TIME_TABLE_FILE({})!", TIME_TABLE_FILE);
             timeTableFile.write(reinterpret_cast<char *>(&vecSize), sizeof(vecSize));
             timeTableFile.write(reinterpret_cast<char *>(xtagU64Vec.data()), vecSize * sizeof(uint64_t));
-            ASSERT(timeTableFile, "Failed to write to file", TIME_TABLE_FILE);
+            VL_FATAL(timeTableFile, "Failed to write to file({})!", TIME_TABLE_FILE);
             timeTableFile.close();
         }
 
@@ -275,7 +275,7 @@ NormalParse:
             }
         }
 
-        ASSERT(jitRecompileWindowSize <= jitCompileWindowSize, "`jitRecompileWindowSize` should less than or equal to `jitCompileWindowSize`", jitRecompileWindowSize, jitCompileWindowSize);
+        VL_FATAL(jitRecompileWindowSize <= jitCompileWindowSize, "`jitRecompileWindowSize`({}) should less than or equal to `jitCompileWindowSize`({})", jitRecompileWindowSize, jitCompileWindowSize);
     }
 }
 
@@ -458,7 +458,7 @@ void wave_vpi_main() {
     appendValueCb();
 
     // Start wave_vpi evaluation loop
-    ASSERT(cursor.maxIndex != 0);
+    VL_FATAL(cursor.maxIndex != 0, "cursor.maxIndex should not be 0");
     fmt::println("[wave_vpi] START! cursor.maxIndex => {} cursor.maxTime => {}", cursor.maxIndex, cursor.maxTime);
 
     while(cursor.index < cursor.maxIndex) {
@@ -477,8 +477,8 @@ void wave_vpi_main() {
         // Deal with cbValueChange callbacks
         for(auto &cb : valueCbMap) {
             if (cb.second.cbData->cb_rtn != nullptr) [[likely]] {
-                ASSERT(cb.second.cbData->obj != nullptr);
-                ASSERT(cb.second.cbData->cb_rtn != nullptr);
+                VL_FATAL(cb.second.cbData->obj != nullptr, "cbData->obj should not be nullptr");
+                VL_FATAL(cb.second.cbData->cb_rtn != nullptr, "cbData->cb_rtn should not be nullptr");
 
                 auto misMatch = false;
 #ifdef USE_FSDB
@@ -521,7 +521,7 @@ void wave_vpi_main() {
                             break;
                         }
                         default:
-                            ASSERT(false, cb.second.cbData->value->format);
+                            VL_FATAL(false, "cb.second.cbData->value->format should be vpiIntVal");
                             break;
                     }
                     cb.second.cbData->cb_rtn(cb.second.cbData.get());
@@ -556,7 +556,7 @@ void wave_vpi_main() {
 
 PLI_INT32 vpi_free_object(vpiHandle object) {
     if(object != nullptr) {
-        ASSERT(false, "TODO:");
+        VL_FATAL(false, "TODO: vpi_free_object is not supported for now");
         if(valueCbMap.find(*object) != valueCbMap.end()) {
             valueCbMap.erase(*object);
         }
@@ -570,13 +570,13 @@ PLI_INT32 vpi_release_handle(vpiHandle object) {
 }
 
 vpiHandle vpi_put_value(vpiHandle object, p_vpi_value value_p, p_vpi_time time_p, PLI_INT32 flags) {
-    ASSERT(false, "Unsupported in wave_vpi, all signals are read-only!");
+    VL_FATAL(false, "Unsupported in wave_vpi, all signals are read-only!");
     return 0;
 }
 
 vpiHandle vpi_handle_by_name(PLI_BYTE8 *name, vpiHandle scope) {
     // TODO: scope
-    ASSERT(scope == nullptr);
+    VL_FATAL(scope == nullptr, "TODO: scope is not supported for now");
 #ifdef USE_FSDB
     auto varIdCode = fsdbWaveVpi->getVarIdCodeByName(name);
     if(varIdCode == -1) {
@@ -585,7 +585,7 @@ vpiHandle vpi_handle_by_name(PLI_BYTE8 *name, vpiHandle scope) {
 
     auto hdl = fsdbWaveVpi->fsdbObj->ffrCreateVCTrvsHdl(varIdCode);
     if (!hdl) {
-        PANIC("Failed to create value change traverse handle", name);
+        VL_FATAL(false, "Failed to create value change traverse handle, name: {}", std::string(name));
     }
 
     auto fsdbSigHdl = new FsdbSignalHandle {
@@ -612,13 +612,13 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
     std::unique_lock<std::mutex> lock(optMutex);
 
     ffrObject *fsdbObj = ffrObject::ffrOpenNonSharedObj(const_cast<char *>(fsdbFileName.c_str()));
-    ASSERT(fsdbObj != nullptr);
+    VL_FATAL(fsdbObj != nullptr, "Failed to open fsdbObj, fsdbFileName: {}", fsdbFileName);
     fsdbObj->ffrReadScopeVarTree();
 
     auto hdl = fsdbObj->ffrCreateVCTrvsHdl(fsdbSigHdl->varIdCode);
     auto bitSize = hdl->ffrGetBitSize();
-    ASSERT(hdl != nullptr, "Failed to create hdl", fsdbFileName, fsdbSigHdl->name, fsdbSigHdl->varIdCode);
-    ASSERT(bitSize <= 32, "For now we only optimize signals with bitSize <= 32");
+    VL_FATAL(hdl != nullptr, "Failed to create hdl, fsdbFileName: {}, fsdbSigHdl->name: {}, fsdbSigHdl->varIdCode: {}", fsdbFileName, fsdbSigHdl->name, fsdbSigHdl->varIdCode);
+    VL_FATAL(bitSize <= 32, "For now we only optimize signals with bitSize <= 32, bitSize: {}", bitSize);
   
     auto &optValueVec = fsdbSigHdl->optValueVec;
     optValueVec.reserve(xtagVec.size());
@@ -642,11 +642,11 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
             time.hltag.L = time.hltag.L + 1;
 
             if(FSDB_RC_SUCCESS != hdl->ffrGotoXTag(&time)) [[unlikely]] {
-                PANIC("Failed to call hdl->ffrGotoXtag()", time.hltag.L, time.hltag.H, idx, fsdbSigHdl->name, fsdbFileName);
+                VL_FATAL(false, "Failed to call hdl->ffrGotoXtag(), time.hltag.L: {}, time.hltag.H: {}, idx: {}, fsdbSigHdl->name: {}, fsdbFileName: {}", time.hltag.L, time.hltag.H, idx, fsdbSigHdl->name, fsdbFileName);
             }
 
             if(FSDB_RC_SUCCESS != hdl->ffrGetVC(&retVC)) [[unlikely]] {
-                PANIC("hdl->ffrGetVC() failed!");
+                VL_FATAL(false, "hdl->ffrGetVC() failed!");
             }
 
             bpb = hdl->ffrGetBytesPerBit();
@@ -664,16 +664,16 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
                             optValueVec[idx] = 1;
                             break;
                         default:
-                            PANIC("unknown verilog bit type found.");
+                            VL_FATAL(false, "unknown verilog bit type found.");
                     }
                     break;
                 }
                 case FSDB_BYTES_PER_BIT_4B:
                 case FSDB_BYTES_PER_BIT_8B:
-                    PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
+                    VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_4B/8B, bpb: {}", static_cast<int>(bpb));
                     break;
                 default:
-                    PANIC("Should not reach here!");
+                    VL_FATAL(false, "Should not reach here!");
                 }
             } else {
                 switch (bpb) {
@@ -688,17 +688,17 @@ void optThreadTask(std::string fsdbFileName, std::vector<fsdbXTag> xtagVec, Fsdb
                             tmpVal += 1 << (bitSize - i - 1);
                             break;
                         default:
-                            PANIC("unknown verilog bit type found.");
+                            VL_FATAL(false, "unknown verilog bit type found.");
                         }
                     }
                     break;
                 }
                 case FSDB_BYTES_PER_BIT_4B:
                 case FSDB_BYTES_PER_BIT_8B:
-                    PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
+                    VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_4B/8B, bpb: {}", static_cast<int>(bpb));
                     break;
                 default:
-                    PANIC("Should not reach here!");
+                    VL_FATAL(false, "Should not reach here!");
                 }
                 optValueVec[idx] = tmpVal;
             }
@@ -808,7 +808,7 @@ void vpi_get_value(vpiHandle object, p_vpi_value value_p) {
             return;
         }
         default:
-            PANIC("Unsupported!", value_p->format);
+            VL_FATAL(false, "Unsupported format: {}", value_p->format);
         }
     } else {
         fsdbSigHdl->readCnt++;
@@ -838,10 +838,10 @@ ReadFromFSDB:
     if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) [[unlikely]] {
         auto currIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.index];
         auto maxIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.maxIndex];
-        PANIC("vcTrvsHdl->ffrGotoXTag() failed!", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
+        VL_FATAL(false, "vcTrvsHdl->ffrGotoXTag() failed! time.hltag.L: {}, time.hltag.H: {}, maxIndexTime: {}, currIndexTime: {}, cursor.maxIndex: {}, cursor.index: {}", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
     }
     if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGetVC(&retVC)) [[unlikely]] {
-        PANIC("vcTrvsHdl->ffrGetVC() failed!");
+        VL_FATAL(false, "vcTrvsHdl->ffrGetVC() failed!");
     }
 
     bpb = vcTrvsHdl->ffrGetBytesPerBit();
@@ -865,19 +865,19 @@ ReadFromFSDB:
                     // treat `Z` as `0`
                     break;
                 default:
-                    PANIC("unknown verilog bit type found.");
+                    VL_FATAL(false, "unknown verilog bit type found.");
                 }
             }
             break;
         }
         case FSDB_BYTES_PER_BIT_4B:
-            PANIC("TODO: FSDB_BYTES_PER_BIT_4B");
+            VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_4B");
             break;
         case FSDB_BYTES_PER_BIT_8B:
-            PANIC("TODO: FSDB_BYTES_PER_BIT_8B");
+            VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_8B");
             break;
         default:
-            PANIC("Should not reach here!");
+            VL_FATAL(false, "Should not reach here!");
         }
         break;
     }
@@ -908,7 +908,7 @@ ReadFromFSDB:
                     // treat `Z` as `0`
                     break;
                 default:
-                    PANIC("unknown verilog bit type found.", i);
+                    VL_FATAL(false, "unknown verilog bit type found. i: {}", i);
                 }
                 tmpIdx++;
                 if (tmpIdx == 32) {
@@ -927,13 +927,13 @@ ReadFromFSDB:
             break;
         }
         case FSDB_BYTES_PER_BIT_4B:
-            PANIC("TODO: FSDB_BYTES_PER_BIT_4B");
+            VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_4B");
             break;
         case FSDB_BYTES_PER_BIT_8B:
-            PANIC("TODO: FSDB_BYTES_PER_BIT_8B");
+            VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_8B");
             break;
         default:
-            PANIC("Should not reach here!");
+            VL_FATAL(false, "Should not reach here!");
         }
         value_p->value.vector = vpiValueVecs;
         break;
@@ -966,7 +966,7 @@ ReadFromFSDB:
                     // treat `Z` as `0`
                     break;
                 default:
-                    PANIC("unknown verilog bit type found.", i);
+                    VL_FATAL(false, "unknown verilog bit type found. i: {}", i);
                 }
                 tmpIdx++;
                 if (tmpIdx == 4) {
@@ -984,13 +984,13 @@ ReadFromFSDB:
             break;
         }
         case FSDB_BYTES_PER_BIT_4B:
-            PANIC("TODO: FSDB_BYTES_PER_BIT_4B");
+            VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_4B");
             break;
         case FSDB_BYTES_PER_BIT_8B:
-            PANIC("TODO: FSDB_BYTES_PER_BIT_8B");
+            VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_8B");
             break;
         default:
-            PANIC("Should not reach here!");
+            VL_FATAL(false, "Should not reach here!");
         }
         value_p->value.str = (char *)buffer;
         break;
@@ -1016,26 +1016,26 @@ ReadFromFSDB:
                     buffer[i] = '0';
                     break;
                 default:
-                    PANIC("unknown verilog bit type found.");
+                    VL_FATAL(false, "unknown verilog bit type found.");
                 }
             }
             buffer[i] = '\0';
             break;
         }
         case FSDB_BYTES_PER_BIT_4B:
-            PANIC("TODO: FSDB_BYTES_PER_BIT_4B");
+            VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_4B");
             break;
         case FSDB_BYTES_PER_BIT_8B:
-            PANIC("TODO: FSDB_BYTES_PER_BIT_8B");
+            VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_8B");
             break;
         default:
-            PANIC("Should not reach here!");
+            VL_FATAL(false, "Should not reach here!");
         }
         value_p->value.str = (char *)buffer;
         break;
     }
     default: {
-        PANIC("Unknown value format", value_p->format);
+        VL_FATAL(false, "Unknown value format: {}", value_p->format);
     }
     }
 
@@ -1067,11 +1067,11 @@ PLI_BYTE8 *vpi_get_str(PLI_INT32 property, vpiHandle object) {
         case FSDB_VT_VCD_WIRE:
             return "vpiNet";
         default:
-            PANIC("Unknown fsdbVarType", varType);
+            VL_FATAL(false, "Unknown fsdbVarType: {}", static_cast<int>(varType));
         }
     }
     default:
-        PANIC("Unimplemented property", property);
+        VL_FATAL(false, "Unimplemented property: {}", property);
     }
 #else
     return reinterpret_cast<PLI_BYTE8 *>(wellen_vpi_get_str(property, reinterpret_cast<void *>(object)));
@@ -1084,7 +1084,7 @@ PLI_INT32 vpi_get(PLI_INT32 property, vpiHandle object) {
     case vpiSize:
         return reinterpret_cast<FsdbSignalHandlePtr>(object)->bitSize;
     default:
-        PANIC("Unimplemented property", property);
+        VL_FATAL(false, "Unimplemented property: {}", property);
     }
 #else
     return wellen_vpi_get(property,reinterpret_cast<void *>(object));
@@ -1103,7 +1103,7 @@ vpiHandle vpi_scan(vpiHandle iterator) {
 }
 
 vpiHandle vpi_handle_by_index(vpiHandle object, PLI_INT32 indx) {
-    ASSERT(false, "TODO:");
+    VL_FATAL(false, "TODO: vpi_handle_by_index is not supported for now");
     return nullptr;
 }
 
@@ -1119,7 +1119,7 @@ PLI_INT32 vpi_control(PLI_INT32 operation, ...) {
             endOfSimulation();
             return 1;
         default:
-            ASSERT(false, "Unsupported operation", operation);
+            VL_FATAL(false, "Unsupported operation: {}", operation);
             break;
     }
     return 0;
@@ -1149,10 +1149,10 @@ inline uint32_t fsdbGetSingleBitValue(vpiHandle object) {
     // if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGotoXTag(&time)) [[unlikely]] {
     //     auto currIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.index];
     //     auto maxIndexTime = fsdbWaveVpi->xtagU64Vec[cursor.maxIndex];
-    //     PANIC("vcTrvsHdl->ffrGotoXTag() failed!", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
+    //     VL_FATAL(false, "vcTrvsHdl->ffrGotoXTag() failed! time.hltag.L: {}, time.hltag.H: {}, maxIndexTime: {}, currIndexTime: {}, cursor.maxIndex: {}, cursor.index: {}", time.hltag.L, time.hltag.H, maxIndexTime, currIndexTime, cursor.maxIndex, cursor.index);
     // }
     // if(FSDB_RC_SUCCESS != vcTrvsHdl->ffrGetVC(&retVC)) [[unlikely]] {
-    //     PANIC("vcTrvsHdl->ffrGetVC() failed!");
+    //     VL_FATAL(false, "vcTrvsHdl->ffrGetVC() failed!");
     // }
 
     // bpb = vcTrvsHdl->ffrGetBytesPerBit();
@@ -1167,23 +1167,23 @@ inline uint32_t fsdbGetSingleBitValue(vpiHandle object) {
     //         case FSDB_BT_VCD_1:
     //             return 1;
     //         default:
-    //             PANIC("unknown verilog bit type found.");
+    //             VL_FATAL(false, "unknown verilog bit type found.");
     //     }
     //     break;
     // }
     // case FSDB_BYTES_PER_BIT_4B:
     // case FSDB_BYTES_PER_BIT_8B:
-    //     PANIC("TODO: FSDB_BYTES_PER_BIT_4B/8B", bpb);
+    //     VL_FATAL(false, "TODO: FSDB_BYTES_PER_BIT_4B/8B, bpb: {}", static_cast<int>(bpb));
     //     break;
     // default:
-    //     PANIC("Should not reach here!");
+    //     VL_FATAL(false, "Should not reach here!");
     // }
 
-    // PANIC("Should not come here...");
+    // VL_FATAL(false, "Should not come here...");
 }
 #else
 inline std::string _wellen_get_value_str(vpiHandle object) {
-    ASSERT(object != nullptr);
+    VL_FATAL(object != nullptr, "object is nullptr");
     return std::string(wellen_get_value_str(reinterpret_cast<void *>(object), cursor.index));
 }
 #endif
@@ -1191,18 +1191,18 @@ inline std::string _wellen_get_value_str(vpiHandle object) {
 vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
     switch (cb_data_p->reason) {
         case cbStartOfSimulation:
-            ASSERT(startOfSimulationCb == nullptr);
+            VL_FATAL(startOfSimulationCb == nullptr, "startOfSimulationCb is not nullptr");
             startOfSimulationCb = std::make_unique<s_cb_data>(*cb_data_p);
             break;
         case cbEndOfSimulation:
-            ASSERT(endOfSimulationCb == nullptr);
+            VL_FATAL(endOfSimulationCb == nullptr, "endOfSimulationCb is not nullptr");
             endOfSimulationCb = std::make_unique<s_cb_data>(*cb_data_p);
             break;
         case cbValueChange: {
-            ASSERT(cb_data_p->obj != nullptr);
-            ASSERT(cb_data_p->cb_rtn != nullptr);
-            ASSERT(cb_data_p->time != nullptr && cb_data_p->time->type == vpiSuppressTime);
-            ASSERT(cb_data_p->value != nullptr && cb_data_p->value->format == vpiIntVal);
+            VL_FATAL(cb_data_p->obj != nullptr, "cb_data_p->obj is nullptr");
+            VL_FATAL(cb_data_p->cb_rtn != nullptr, "cb_data_p->cb_rtn is nullptr");
+            VL_FATAL(cb_data_p->time != nullptr && cb_data_p->time->type == vpiSuppressTime, "cb_data_p->time is nullptr or cb_data_p->time->type is not vpiSuppressTime");
+            VL_FATAL(cb_data_p->value != nullptr && cb_data_p->value->format == vpiIntVal, "cb_data_p->value is nullptr or cb_data_p->value->format is not vpiIntVal");
             
             auto t = *cb_data_p;
 #ifdef USE_FSDB
@@ -1234,7 +1234,7 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
             break;
         }
         case cbAfterDelay: {
-            ASSERT(cb_data_p->time != nullptr && cb_data_p->time->type == vpiSimTime);
+            VL_FATAL(cb_data_p->time != nullptr && cb_data_p->time->type == vpiSimTime, "cb_data_p->time is nullptr or cb_data_p->time->type is not vpiSimTime");
             
             uint64_t time = (((uint64_t) cb_data_p->time->high << 32) | (cb_data_p->time->low));
 #ifdef USE_FSDB
@@ -1244,21 +1244,21 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
             uint64_t targetTime = wellen_get_time_from_index(cursor.index) + time;
             uint64_t targetIndex = wellen_get_index_from_time(targetTime);            
 #endif
-            ASSERT(targetTime <= cursor.maxTime);
+            VL_FATAL(targetTime <= cursor.maxTime, "targetTime: {}, cursor.maxTime: {}", targetTime, cursor.maxTime);
 
             willAppendTimeCbQueue.emplace_back(std::make_pair(targetIndex, std::make_shared<t_cb_data>(*cb_data_p)));
             break;
         }
         case cbNextSimTime: {
-            ASSERT(cb_data_p->cb_rtn != nullptr);
-            ASSERT(cb_data_p->obj == nullptr); // cbNextSimTime callbacks do not have an object handle.
-            ASSERT(cb_data_p->value == nullptr);
+            VL_FATAL(cb_data_p->cb_rtn != nullptr, "cb_data_p->cb_rtn is nullptr");
+            VL_FATAL(cb_data_p->obj == nullptr, "cb_data_p->obj is not nullptr"); // cbNextSimTime callbacks do not have an object handle.
+            VL_FATAL(cb_data_p->value == nullptr, "cb_data_p->value is not nullptr");
             
             willAppendNextSimTimeQueue.emplace_back(std::make_shared<t_cb_data>(*cb_data_p));
             break;
         }
         default:
-            ASSERT(false, "TODO:", cb_data_p->reason);
+            VL_FATAL(false, "TODO: cb reason: {}", cb_data_p->reason);
             break;
     }
 
@@ -1272,7 +1272,7 @@ vpiHandle vpi_register_cb(p_cb_data cb_data_p) {
 }
 
 PLI_INT32 vpi_remove_cb(vpiHandle cb_obj) {
-    ASSERT(cb_obj != nullptr);
+    VL_FATAL(cb_obj != nullptr, "cb_obj is nullptr");
     if(valueCbMap.find(*cb_obj) != valueCbMap.end()) {
         willRemoveValueCb.emplace_back(*cb_obj);
     }

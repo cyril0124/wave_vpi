@@ -2,7 +2,6 @@
 
 #include "vpi_user.h"
 #include "fmt/core.h"
-#include "libassert/assert.hpp"
 
 #include <cstddef>
 #include <cstdint>
